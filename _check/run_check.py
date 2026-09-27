@@ -1,24 +1,57 @@
-import sys, re, html, json, subprocess, os, tempfile
+"""开发期自检：用无头 Chrome 打开 _check/ 里的自检页，把断言结果打印出来。
 
-CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+用法：
+    python _check/run_check.py speedgap.html
+    python _check/run_check.py offline.html
+    CHROME_PATH=/path/to/chrome python _check/run_check.py twinit.html
+
+自检页把结果写进 <pre id="out"> 里的 JSON（也会显示在页面标题上），
+本脚本只负责打开、取出、打印，不做判断 —— 判断在页面里。
+"""
+import sys, re, html, json, subprocess, os, tempfile, shutil
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+CHROME_CANDIDATES = [
+    os.environ.get("CHROME_PATH"),
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    shutil.which("chrome"),
+    shutil.which("google-chrome"),
+    shutil.which("chromium"),
+]
+
+
+def find_chrome():
+    for p in CHROME_CANDIDATES:
+        if p and os.path.exists(p):
+            return p
+    raise SystemExit("找不到 Chrome —— 用 CHROME_PATH 环境变量指定它的完整路径")
 
 
 def uniq_safe(a):
     return sorted(set(a), key=lambda x: (x is None, x))
 
+
 def run(page, budget=4000, extra=None):
     tmp = tempfile.mkdtemp(prefix="cp_")
-    cmd = [CHROME, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-proxy-server",
+    url = "file:///" + os.path.join(HERE, page).replace("\\", "/")
+    cmd = [find_chrome(), "--headless=new", "--disable-gpu", "--no-sandbox",
+           "--no-proxy-server",
            "--allow-file-access-from-files", "--user-data-dir=" + tmp,
-           "--virtual-time-budget=%d" % budget, "--dump-dom",
-           "file:///C:/Users/38439/WorkBuddy/2026-09-26-15-35-27/_check/" + page]
+           "--virtual-time-budget=%d" % budget, "--dump-dom", url]
     if extra:
         cmd[1:1] = extra
-    out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+    out = subprocess.run(cmd, capture_output=True, text=True,
+                         encoding="utf-8", errors="replace").stdout
     title = re.search(r"<title>([^<]*)</title>", out)
     m = re.search(r'<pre id="out">(.*?)</pre>', out, re.S)
     body = html.unescape(m.group(1)) if m else "(no out)"
     return (title.group(1) if title else "?"), body
+
 
 if __name__ == "__main__":
     page = sys.argv[1] if len(sys.argv) > 1 else "speedgap.html"
