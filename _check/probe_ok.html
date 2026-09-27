@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head><body>
+<iframe id="f" src="../pinyin-nine-key.html" width="375" height="880"></iframe>
+<pre id="out">pending</pre>
+<script>
+document.getElementById('f').addEventListener('load', function () {
+  var d = document.getElementById('f').contentDocument;
+  var win = document.getElementById('f').contentWindow;
+  d.querySelector('.tab[data-page="practice"]').click();
+  win.eval("pracWord = WORDS[2]; pracIdx = 0; pracWrong = 0; pracClicks = 0; pracDone = false; renderPractice(); markCurrent();");
+  win.eval("padPractice.clearActive(); padPractice.flash(2, 'is-ok', 60000, 'b');");
+  var b = d.querySelectorAll('#padPractice .k')[1];   // 2 键
+  var info = Array.prototype.map.call(b.querySelectorAll('.kch'), function (x) {
+    return x.dataset.ch + '[' + x.className + ']';
+  });
+  document.getElementById('out').textContent = '键2: ' + info.join(' ') +
+    '\n字母 b 上的类: ' + (function(){
+      var hit = Array.prototype.filter.call(b.querySelectorAll('.kch'), function(x){return x.dataset.ch==='B';})[0];
+      return hit ? hit.className : '(找不到)';
+    })() +
+    '\n后三位字母键也看一眼: ' + Array.prototype.map.call(d.querySelectorAll('#padPractice .k'), function(k,i){ return i+':' + k.innerText.replace(/\s/g,''); }).join(',');
+});
+</script></body></html>

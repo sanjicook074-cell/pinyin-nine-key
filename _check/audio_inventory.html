@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>pending</title>
+<style>body{font:13px/1.6 ui-monospace,monospace}iframe{width:420px;height:780px;border:1px solid #ccc}#out{white-space:pre-wrap}</style>
+</head><body>
+<iframe id="f" src="../pinyin-nine-key.html"></iframe>
+<pre id="out">pending</pre>
+<script>
+var f = document.getElementById('f');
+var out = document.getElementById('out');
+
+/* 关键：不能在父页用 win.eval 读 app 的顶层 const —— 间接 eval 拿不到全局词法绑定。
+   改成往 iframe 里注入一个 <script>，让代码在 app 自己的作用域里跑。 */
+var CODE = "(function(){try{" +
+  "var ini=Object.keys(INITIAL_AUDIO).map(function(k){return INITIAL_AUDIO[k]}).filter(Boolean);" +
+  "var fin=Object.keys(FINAL_AUDIO).map(function(k){return FINAL_AUDIO[k]}).filter(Boolean);" +
+  "var han={};WORDS.forEach(function(w){w.sylInfo.forEach(function(i){han[i.hanAudio]=1})});" +
+  "var all={};ini.concat(fin).concat(Object.keys(han)).forEach(function(n){all[n]=1});" +
+  "return {ok:true, words:WORDS.length, total:Object.keys(all).length," +
+  " ini:ini.length, fin:fin.length, han:Object.keys(han).length," +
+  " names:Object.keys(all).sort(), sample:WORDS[0].hanzi, syl0:WORDS[0].sylInfo.length};" +
+  "}catch(e){return {ok:false, err:String(e)}}})();";
+
+function go() {
+  var doc = f.contentDocument, win = f.contentWindow;
+  var R;
+  try {
+    var s = doc.createElement('script');
+    s.textContent = 'window.__PROBE__ = ' + CODE;
+    doc.body.appendChild(s);
+    R = win.__PROBE__;
+  } catch (e) {
+    R = { ok: false, err: '注入失败: ' + (e && e.message) };
+  }
+  R = R || { ok: false, err: '无返回' };
+  out.textContent = JSON.stringify(R);
+  document.title = R.ok ? 'PASS ' + R.total : 'FAIL ' + (R.err || '');
+}
+
+if (f.contentDocument && f.contentDocument.readyState === 'complete'
+    && f.contentDocument.body && f.contentDocument.body.children.length) go();
+else f.addEventListener('load', go);
+</script>
+</body></html>

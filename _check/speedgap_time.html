@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>speedgap_time</title>
+<style>body{margin:0;font:11px monospace}iframe{border:0;display:block}</style>
+</head><body>
+<iframe id="f" src="../pinyin-nine-key.html" width="375" height="900"></iframe>
+<pre id="out">pending</pre>
+<script>
+/* 直接量时间线：字怎么拼（spell）/ 字与字之间那一拍（gap）。
+   这次**不**把 setTimeout 变同步 —— 要的就是真实排期，只把音频换成
+   "等 dur / playbackRate 之后回调 onended" 的假货，录音时长于是可控可复现。
+   headless 的 --virtual-time-budget 会把定时器快进，Date.now() 跟虚拟钟走，
+   量出来的是**排期时间**本身，不是秒表碰运气。
+
+   四组：新行为(plain) / 旧行为(把 syl 步的 plain 去掉 = 整字读音也跟滑块)
+        × 0.4× / 1.6×。看两件事：
+   ① spell（拼读）随速度变 → 调速真的只作用在"拼"上
+   ② gap（字与字之间的间隔）新旧对比 → 新版两档相等，旧版被速度拉长 */
+function go() {
+ try {
+  var fr = document.getElementById('f');
+  var d = fr.contentDocument, win = fr.contentWindow;
+
+  document.title = 'start';
+  var SEG_MS = 300;      // 假装一段声母/韵母录音 300ms
+  var HAN_MS = 500;      // 假装一个整字录音 500ms
+  var realST = win.setTimeout.bind(win);
+  var CUR_KIND = '?', IN_WORD = false, STRIP = false;
+  var EV = [], pulses = [];
+
+  function FakeAudio() {
+    var self = this;
+    this.playbackRate = 1; this.preload = ''; this._src = '';
+    this.onended = null; this.onerror = null;
+    Object.defineProperty(this, 'src', {
+      get: function () { return self._src; },
+      set: function (v) { self._src = v; }
+    });
+    this.load = this.pause = function () {};
+    this.play = function () {
+      var dur = ((CUR_KIND === 'han' || CUR_KIND === 'word') ? HAN_MS : SEG_MS) / self.playbackRate;
+      realST(function () { if (self.onended) self.onended(); }, dur);
+      return { catch: function () {} };
+    };
+  }
+  win.Audio = FakeAudio;
+
+  var realVAW = win.voiceAndWait;
+  win.voiceAndWait = function (item, cb, rate) {
+    CUR_KIND = (item && item.__kind) || (IN_WORD ? 'word' : 'other');
+    EV.push({ t: Date.now(), ev: 'voice', kind: CUR_KIND, audio: item && item.audio,
+              rate: rate === undefined ? -1 : rate });
+    return realVAW.call(win, item, cb, rate);
+  };
+  var realSW = win.speakWordOf;
+  var onDoneCb = null;
+  win.speakWordOf = function (w, cb, rate) {
+    IN_WORD = true;
+    EV.push({ t: Date.now(), ev: 'wordRead' });
+    /* 不把应用原本的 afterDemoVoice 传下去：不换词、不自动跳，四组跑的是同一个词 */
+    return realSW.call(win, w, function () { IN_WORD = false; if (onDoneCb) onDoneCb(); }, rate);
+  };
+  var realBuild = win.buildDemoSteps;
+  win.buildDemoSteps = function (w) {
+    var steps = realBuild.call(win, w);
+    steps.forEach(function (s) {
+      if (!s.voice) return;
+      s.voice.__kind = (s.part === 'syl') ? 'han' : 'seg';
+      if (STRIP && s.part === 'syl') s.plain = false;   // ← 模拟旧行为
+    });
+    return steps;
+  };
+
+  var pad = win.eval('padDemo');
+  var realPulse = pad.pulse;
+  pad.pulse = function (dig, ms, ch) {
+    pulses.push({ t: Date.now(), ch: ch });
+    return realPulse.call(pad, dig, ms, ch);
+  };
+
+  function setRate(v) {
+    var el = d.getElementById('demoSpeed');
+    el.value = String(v);
+    el.dispatchEvent(new win.Event('input', { bubbles: true }));
+    return win.eval('demoRate');
+  }
+  function plan() {
+    return win.eval('buildDemoSteps(demoWord).map(function(s){return {si:s.si, part:s.part,'
+                  + ' key:s.key, audio: s.voice ? s.voice.audio : null};})');
+  }
+  function analyze(steps, rate, strip) {
+    var keySteps = steps.filter(function (s) { return s.part !== 'syl' && s.key !== undefined; });
+    var pSyl = pulses.map(function (p, i) { return { t: p.t, si: keySteps[i] ? keySteps[i].si : null }; });
+    var hanVoices = EV.filter(function (e) { return e.ev === 'voice' && e.kind === 'han'; });
+    var wordAt = (EV.filter(function (e) { return e.ev === 'wordRead'; })[0] || {}).t;
+    var sylCount = steps.filter(function (s) { return s.part === 'syl'; }).length;
+    var syls = [];
+    for (var s = 0; s < sylCount; s++) {
+      var first = null, next = null;
+      pSyl.forEach(function (p) {
+        if (p.si === s && first === null) first = p.t;
+        if (p.si === s + 1 && next === null) next = p.t;
+      });
+      var hv = hanVoices[s];
+      syls.push({
+        /* 拼：这个字第一次按键 → 这个字开始被读出来 */
+        spell: (hv && first !== null) ? hv.t - first : null,
+        /* ⭐ 字与字之间的间隔 = 这个字**开始被读** → 下一个字第一次按键。
+           里面含「整字读音时长（= HAN_MS / 该段速率）+ 收尾 200ms」。
+           新版整字读音钉死 1× → 恒为 HAN_MS + 200；旧版按滑块播 → 慢档被拉长。
+           量的是**整段**，不减去读音时长 —— 那正是会随速度变的部分。 */
+        gap: (next !== null && hv) ? next - hv.t : null,
+        readMs: hv ? Math.round(HAN_MS / hv.rate) : null,
+        hanRate: hv ? hv.rate : null
+      });
+    }
+    var t0 = pulses.length ? pulses[0].t : 0;
+    var t1 = wordAt || (EV.length ? EV[EV.length - 1].t : 0);
+    return { rate: rate, strip: strip, syls: syls, span: t1 - t0,
+             puzzle: strip ? '旧行为(整字读音跟滑块)' : '新行为(整字读音钉死1×)' };
+  }
+  function measure(rate, strip, cb) {
+    STRIP = strip;
+    win.eval('demoPlaying = false; demoIndex = 0; demoWord = WORDS[0]; renderDemoWord(); cancelAutoNext();');
+    var steps = plan();
+    EV = []; pulses = [];
+    document.title = 'measuring:' + rate + ':' + strip;
+    setRate(rate);
+    onDoneCb = function () { onDoneCb = null; win.eval('cancelAutoNext();'); cb(analyze(steps, rate, strip)); };
+    d.getElementById('demoPlay').click();
+  }
+
+  var out = {};
+  var queue = [
+    { rate: 0.4, strip: false, key: 'new04' },
+    { rate: 1.6, strip: false, key: 'new16' },
+    { rate: 0.4, strip: true,  key: 'old04' },
+    { rate: 1.6, strip: true,  key: 'old16' }
+  ];
+  (function next() {
+    if (!queue.length) return report();
+    var job = queue.shift();
+    measure(job.rate, job.strip, function (res) {
+      out[job.key] = res;
+      document.title = 'run:' + Object.keys(out).length + ':' + job.key;   // 进度，便于看卡在哪一段
+      next();
+    });
+  })();
+
+  function avg(a) {
+    var v = a.filter(function (x) { return x !== null && x !== undefined; });
+    return v.length ? v.reduce(function (p, q) { return p + q; }, 0) / v.length : null;
+  }
+  function report() {
+    var bad = [];
+    var R = { runs: out, result: {} };
+    Object.keys(out).forEach(function (k) {
+      var r = out[k];
+      R.result[k] = {
+        puzzle: r.puzzle, rate: r.rate,
+        spellMs: Math.round(avg(r.syls.map(function (s) { return s.spell; }))),
+        gapMs: Math.round(avg(r.syls.map(function (s) { return s.gap; }))),
+        readMs: Math.round(avg(r.syls.map(function (s) { return s.readMs; }))),
+        hanRates: r.syls.map(function (s) { return s.hanRate; }),
+        spanMs: r.span
+      };
+    });
+    var n04 = R.result.new04, n16 = R.result.new16;
+    var o04 = R.result.old04, o16 = R.result.old16;
+    /* ① 拼读时长：0.4× 应是 1.6× 的 4 倍 */
+    R.spellRatioNew = +(n04.spellMs / n16.spellMs).toFixed(2);
+    R.spellRatioOld = +(o04.spellMs / o16.spellMs).toFixed(2);
+    if (Math.abs(R.spellRatioNew - 4) > 0.4) bad.push('新版 spell 比值不是 ~4: ' + R.spellRatioNew);
+    if (Math.abs(R.spellRatioOld - 4) > 0.4) bad.push('旧版 spell 比值不是 ~4: ' + R.spellRatioOld);
+    /* ② ⭐ 字与字之间的间隔（这个字开始被读 → 下一个字第一次按键） */
+    R.gapDiffNew = Math.abs(n04.gapMs - n16.gapMs);
+    R.gapDiffOld = Math.abs(o04.gapMs - o16.gapMs);
+    if (R.gapDiffNew > 40) bad.push('新版字间间隔仍随速度变: ' + n04.gapMs + ' vs ' + n16.gapMs);
+    if (R.gapDiffOld < 500) bad.push('旧版本该暴露"间隔随速度变"，没测出来: ' + o04.gapMs + ' vs ' + o16.gapMs);
+    if (o04.gapMs <= n04.gapMs) bad.push('旧版慢档间隔应比新版长: ' + o04.gapMs + ' vs ' + n04.gapMs);
+    /* 新版的间隔应≈ 整字读音(500) + 收尾(200) */
+    if (Math.abs(n04.gapMs - (HAN_MS + 200)) > 40) bad.push('新版间隔不等于 读音+收尾: ' + n04.gapMs);
+    /* ③ 整字读音的速率 */
+    if (n04.hanRates.join(',') !== '1,1' || n16.hanRates.join(',') !== '1,1') {
+      bad.push('新版整字读音速率不是 1: ' + JSON.stringify([n04.hanRates, n16.hanRates]));
+    }
+    if (o04.hanRates.join(',') !== '0.4,0.4' || o16.hanRates.join(',') !== '1.6,1.6') {
+      bad.push('旧行为模拟没生效: ' + JSON.stringify([o04.hanRates, o16.hanRates]));
+    }
+    /* ④ 自检：量出来的 span 应当≈ 模型算出来的（证明钟是真的在走） */
+    R.spanCheck = {
+      new04: n04.spanMs, new16: n16.spanMs,
+      expectNew04: Math.round(5 * 1400 + 2 * (HAN_MS + 200) + 2 * (HAN_MS + 200)),
+      expectNew16: Math.round(5 * 350 + 2 * (HAN_MS + 200) + 2 * (HAN_MS + 200))
+    };
+    if (n04.spanMs < 6000 || n16.spanMs > 4000) bad.push('时间线量得不对（钟可能没在走）: ' + JSON.stringify(R.result));
+    R.problems = bad;
+    R.ok = bad.length === 0;
+    document.getElementById('out').textContent = JSON.stringify(R, null, 1);
+    document.title = bad.length ? 'FAIL:' + bad.length : 'PASS';
+  }
+ } catch (e) {
+  document.getElementById('out').textContent = 'ERR ' + (e && (e.stack || e));
+  document.title = 'ERR';
+ }
+}
+var f0 = document.getElementById('f');
+if (f0.contentDocument && f0.contentDocument.querySelector && f0.contentDocument.querySelector('.tab')) go();
+else f0.addEventListener('load', go);
+</script>
+</body></html>

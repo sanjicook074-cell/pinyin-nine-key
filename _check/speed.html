@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>speed</title>
+<style>body{margin:0;font:11px monospace}iframe{border:0;display:block}</style>
+</head><body>
+<iframe id="f" src="../pinyin-nine-key.html" width="375" height="900"></iframe>
+<pre id="out">pending</pre>
+<script>
+/* 示范是一条异步链（每步等录音 onended，再 setTimeout 进下一步）。
+   为了能一次把整段量完，这里做两件事，都是"记账"不是"改行为"：
+   ① Audio 换成假的：记下 playbackRate，然后立刻回调 onended（不联网、不出声）
+   ② setTimeout 换成"同步执行 + 记录排期值"：整段示范变成同步流程，
+      记录的 delay 就是应用原本要排的时间
+   于是①+②得到的是一份确定性的时间表，而不是靠秒表碰运气。 */
+document.getElementById('f').addEventListener('load', function () {
+  var d = document.getElementById('f').contentDocument;
+  var win = document.getElementById('f').contentWindow;
+  var R = {}, bad = [];
+
+  var realST = win.setTimeout;
+  var LOG = { delays: [] };
+
+  function FakeAudio() {
+    var self = this;
+    this.playbackRate = 1;
+    this.preload = '';
+    this._src = '';
+    this.onended = null; this.onerror = null;
+    Object.defineProperty(this, 'src', {
+      get: function () { return self._src; },
+      set: function (v) { self._src = v; }
+    });
+    this.load = function () {};
+    this.pause = function () {};
+    this.play = function () {
+      LOG.rates.push(self.playbackRate);
+      if (self.onended) self.onended();          // 同步"播完"
+      return { catch: function () {} };
+    };
+  }
+  win.Audio = FakeAudio;
+
+  win.setTimeout = function (fn, delay) {
+    if (typeof delay === 'number' && delay > 0) LOG.delays.push(delay);
+    if (typeof fn === 'function') fn();          // 同步推进
+    return 0;
+  };
+
+  var pulses = [];
+  var pad = win.eval('padDemo');
+  var realPulse = pad.pulse;
+  pad.pulse = function (dig, ms) { pulses.push(ms); return realPulse.call(pad, dig, ms); };
+
+  function setRate(v) {
+    var el = d.getElementById('demoSpeed');
+    el.value = String(v);
+    el.dispatchEvent(new win.Event('input', { bubbles: true }));
+    return win.eval('demoRate');
+  }
+  function run() {
+    // 同步 setTimeout 会让 afterDemoVoice 的自动跳词当场生效，
+    // 不锁词的话三轮跑的是三个不同的词，脉冲次数就没法比了
+    win.eval('demoIndex = 0; demoWord = WORDS[0]; renderDemoWord();');
+    LOG = { delays: [], rates: [] };
+    pulses = [];
+    LOG.busyBefore = win.eval('demoPlaying');
+    d.getElementById('demoPlay').click();
+    var done = !win.eval('demoPlaying');          // 同步跑完的话这里就应该是 false
+    var uniq = function (a) { return a.filter(function (x, i) { return a.indexOf(x) === i; }).sort(function (a, b) { return a - b; }); };
+    return {
+      rate: win.eval('demoRate'),
+      finished: done,
+      // 4500 是播放兜底超时、2600 是 TTS 兜底：与速度无关，先滤掉。
+      // 200 是 playClip 的固定收尾、900 是自动跳词：这两条本来就不该随速度变。
+      all: uniq(LOG.delays.filter(function (x) { return x >= 140 && x <= 2100; })),
+      scaled: uniq(LOG.delays.filter(function (x) { return x !== 200 && x !== 900 && x >= 140 && x <= 2100; })
+                   .map(function (x) { return Math.round(x * win.eval('demoRate')); })),
+      pulses: uniq(pulses),
+      audioRates: uniq(LOG.rates),
+      pulseCount: pulses.length
+    };
+  }
+
+  var el = d.getElementById('demoSpeed');
+  R.slider = { min: el.min, max: el.max, step: el.step, value: el.value,
+               text: d.getElementById('demoSpeedVal').textContent };
+  if (el.min !== '0.4' || el.max !== '1.6' || el.step !== '0.2') bad.push('滑块范围不对');
+  // 1.0× 必须正好在滑块正中间（默认就是"正常"）
+  var mid = (parseFloat(el.value) - parseFloat(el.min)) / (parseFloat(el.max) - parseFloat(el.min));
+  R.thumbPos = mid;
+  if (Math.abs(mid - 0.5) > 1e-6) bad.push('1.0× 不在滑块正中: ' + mid);
+  if (R.slider.text !== '1.0×') bad.push('默认档位显示不对: ' + R.slider.text);
+
+  d.querySelector('.tab[data-page="demo"]').click();
+  R.demoWord = win.eval('demoWord.hanzi');
+
+  // 纯函数：刻度本身
+  R.fnAt = {};
+  [0.4, 1, 1.6].forEach(function (v) {
+    setRate(v);
+    R.fnAt[v] = { hold: win.eval('demoHoldMs()'), key: win.eval('demoKeyMs()') };
+  });
+
+  var slow = (function () { setRate(0.4); return run(); })();
+  var norm = (function () { setRate(1);   return run(); })();
+  var fast = (function () { setRate(1.6); return run(); })();
+  R.slow = slow; R.norm = norm; R.fast = fast;
+  R.labelAfter = d.getElementById('demoSpeedVal').textContent;
+
+  function has(arr, v) { return arr.indexOf(v) !== -1; }
+
+  if (slow.busyBefore) bad.push('0.4× 开跑时上一轮还没结束');
+  [slow, norm, fast].forEach(function (r) {
+    if (!r.finished) bad.push(r.rate + '× 没有跑完（demoPlaying 仍为 true）');
+  });
+
+  // 1) 停留时长 = 560 / rate
+  if (norm.all.indexOf(560) === -1) bad.push('1× 排期里没有 560: ' + norm.all);
+  if (slow.all.indexOf(1400) === -1) bad.push('0.4× 排期里没有 1400: ' + slow.all);
+  if (fast.all.indexOf(Math.round(560 / 1.6)) === -1) bad.push('1.6× 排期里没有 ' + Math.round(560/1.6) + ': ' + fast.all);
+
+  // 2) 键亮时长 = 340 / rate，且和刻度函数一致
+  if (norm.pulses[0] !== 340) bad.push('1× 键亮不是 340: ' + norm.pulses);
+  if (slow.pulses[0] !== 850) bad.push('0.4× 键亮不是 850: ' + slow.pulses);
+  if (fast.pulses[0] !== Math.max(140, Math.round(340 / 1.6))) bad.push('1.6× 键亮不是 ' + Math.max(140, Math.round(340/1.6)) + ': ' + fast.pulses);
+  if (norm.pulses[0] !== R.fnAt[1].key || slow.pulses[0] !== R.fnAt[0.4].key ||
+      fast.pulses[0] !== R.fnAt[1.6].key) bad.push('键亮时长和刻度函数对不上');
+
+  // 3) 录音速率：**只有拼读（声母/韵母）跟滑块**；整字读音、结尾整词钉死 1×。
+  //    这条是 2026-09-26 改的规则，完整的正反验证在 speedgap.html / speedgap_time.html。
+  if (slow.audioRates.join(',') !== '0.4,1') bad.push('0.4× 录音速率不对: ' + slow.audioRates);
+  if (norm.audioRates.join(',') !== '1')     bad.push('1× 录音速率不对: ' + norm.audioRates);
+  if (fast.audioRates.join(',') !== '1,1.6') bad.push('1.6× 录音速率不对: ' + fast.audioRates);
+
+  // 4) 把整条时间线折算回 1× 后应和 1× 完全一致 —— 也就是"只有速度变了，节奏没变"。
+  //    容差 3ms：demoKeyMs 里有 round（213×1.6=340.8），
+  //    另外虚拟钟偶尔在两步之间跳 1ms，实测会出现 1399/558 这种"差一两毫秒"的值。
+  function sameAs(a, b) {
+    if (a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i++) if (Math.abs(a[i] - b[i]) > 3) return false;
+    return true;
+  }
+  var ref = [340, 560];
+  if (!sameAs(norm.scaled, ref)) bad.push('1× 折算后不对: ' + norm.scaled);
+  if (!sameAs(slow.scaled, ref)) bad.push('0.4× 折算回 1× 后和 1× 不一致: ' + slow.scaled);
+  if (!sameAs(fast.scaled, ref)) bad.push('1.6× 折算回 1× 后和 1× 不一致: ' + fast.scaled);
+  R.scaledBack = { slow: slow.scaled, norm: norm.scaled, fast: fast.scaled };
+
+  // 5) 每一步都闪了键，快档也没漏步（你好 = ni + hao，5 个字母 → 5 次）
+  R.pulseCounts = [slow.pulseCount, norm.pulseCount, fast.pulseCount];
+  if (slow.pulseCount !== 5 || norm.pulseCount !== 5 || fast.pulseCount !== 5) {
+    bad.push('脉冲次数不对（你好应 5 次）: ' + R.pulseCounts.join('/'));
+  }
+
+  // 6) 变速只在示范页生效
+  d.querySelector('.tab[data-page="practice"]').click();
+  R.voiceRateAfterLeave = win.eval('voiceRate');
+  if (R.voiceRateAfterLeave !== 1) bad.push('离开示范页后 voiceRate 没还原');
+
+  R.problems = bad;
+  document.getElementById('out').textContent = JSON.stringify(R, null, 1);
+  document.title = 'done';
+});
+</script>
+</body></html>

@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>speedui</title>
+<style>body{margin:0;font:11px monospace}iframe{border:0;display:block}</style>
+</head><body>
+<iframe id="f" src="../pinyin-nine-key.html" width="375" height="900"></iframe>
+<pre id="out">pending</pre>
+<script>
+var W = parseInt((location.hash || '#375').slice(1), 10) || 375;
+var f = document.getElementById('f');
+f.width = W; f.height = 900;
+f.addEventListener('load', function () {
+  var d = f.contentDocument, win = f.contentWindow;
+  var R = {}, bad = [];
+  d.querySelector('.tab[data-page="demo"]').click();
+
+  var row = d.querySelector('.speed');
+  var r = row.getBoundingClientRect();
+  var app = d.querySelector('.app');
+  var appR = app.getBoundingClientRect();
+  R.vw = W;
+  R.appRight = Math.round(appR.right);
+  R.rowLeft = Math.round(r.left);
+  R.rowRight = Math.round(r.right);
+  R.rowH = Math.round(r.height);
+  var el = d.getElementById('demoSpeed');
+  var tr = el.getBoundingClientRect();
+  R.sliderW = Math.round(tr.width);
+  R.sliderH = Math.round(tr.height);
+  var thumb = win.getComputedStyle(el, '::-webkit-slider-thumb');
+  R.label = d.getElementById('demoSpeedVal').textContent;
+
+  // 整页横向溢出
+  var over = [];
+  Array.prototype.forEach.call(d.querySelectorAll('.app *'), function (x) {
+    var b = x.getBoundingClientRect();
+    if (b.width > 0 && (b.right > appR.right + 0.5 || b.left < appR.left - 0.5)) {
+      over.push((x.className || x.tagName) + ' L' + Math.round(b.left) + ' R' + Math.round(b.right));
+    }
+  });
+  R.overflowing = over.slice(0, 6);
+  if (over.length) bad.push('有 ' + over.length + ' 个元素超出容器');
+  if (r.right > appR.right + 0.5) bad.push('速度条右边界出界');
+  if (tr.width < 60) bad.push('滑块太短: ' + R.sliderW);
+  if (r.height < 44) bad.push('速度条高度不足 44px: ' + R.rowH);
+
+  R.problems = bad;
+  document.getElementById('out').textContent = JSON.stringify(R, null, 1);
+  document.title = 'done';
+});
+</script>
+</body></html>

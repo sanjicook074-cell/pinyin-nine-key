@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>练习页自动跳题验证</title>
+<style>body{margin:8px;background:#c9d4e4;font:13px/1.5 monospace}
+iframe{width:375px;height:700px;border:0;display:block;margin:0 auto;background:#fff}
+pre{background:#fff;padding:8px;white-space:pre-wrap}</style></head>
+<body>
+<iframe id="f" src="../pinyin-nine-key.html"></iframe>
+<pre id="out">running…</pre>
+<script>
+var OUT = document.getElementById('out');
+var LINES = [], bad = [], win = null, d = null, dels = null;
+var step = 'init';
+var r1 = {}, r2 = {}, pos1 = 0, pos2 = 0, word1 = '', word2 = '';
+
+function log(s) { LINES.push(s); OUT.textContent = LINES.join('\n'); }
+function chk(cond, msg) { if (!cond) bad.push(msg); }
+function has(a, v) { return a.indexOf(v) !== -1; }
+
+/* 每段单独兜异常：定时器回调里抛错不会被外层 try 抓到（上一轮栽过） */
+function stage(name, fn) {
+  try { fn(); }
+  catch (e) { bad.push('[' + name + '] 抛异常: ' + e.message); log('❌ ' + name + ' 抛异常: ' + e.message); }
+}
+
+/* 等条件成立再继续。**不能用固定等待**：一次点击会顺带排出若干无关的长定时
+   （`playClip` 无条件排的那个 4500ms 兜底），固定等待要么太早要么白等。
+   用父页面的 setInterval（没被钩住）轮询 iframe 里的状态。 */
+/* 用**递归 setTimeout** 而不是 setInterval：这套虚拟时钟下
+   `setInterval` 根本不推进（父页的 setTimeout 是好的），
+   interval 版会静默停在原地、连超时分支都不进，看着像"应用卡住了"。 */
+function waitFor(cond, cb, label) {
+  var t = 0, err = null;
+  (function tick() {
+    if (t > 20000) {
+      bad.push(label + ' 超时未发生（20s）' + (err ? '；cond 抛异常: ' + err : ''));
+      log('❌ ' + label + ' 超时' + (err ? '（cond 抛异常: ' + err + '）' : ''));
+      next(); return;
+    }
+    var ok = false;
+    try { ok = !!cond(); } catch (e) { err = e.message; }
+    if (ok) {
+      log('  （' + label + ' 在 ~' + t + 'ms 内发生）');
+      stage(label, cb); next(); return;
+    }
+    t += 120;
+    if (t % 1200 === 0) log('  · tick t=' + t + ' pos=' + (function () { try { return win.eval('practicePos'); } catch (e) { return 'ERR:' + e.message; } })());
+    setTimeout(tick, 120);
+  })();
+}
+
+/* 同步步骤执行完要继续往下调度（`return next()`），
+   否则状态机停在原地、waitFor 永远排不上 —— 表现就是"什么都不输出"。 */
+function next() {
+  if (bad.length) { log('❌ FAIL\n' + bad.join('\n')); return; }
+  if (step === 'init')     { step = 'r1';      stage('r1', round1); return next(); }
+  if (step === 'r1')       { step = 'r1wait';  waitFor(function () { return win.eval('practicePos') === pos1 + 1; }, afterR1, '第1轮自动跳'); return; }
+  if (step === 'r1wait')   { step = 'r2';      stage('r2', round2); return next(); }
+  if (step === 'r2')       { step = 'r2wait';  waitFor(function () { return win.eval('practicePos') === pos2 + 1; }, afterR2, '第2轮自动跳'); return; }
+  if (step === 'r2wait')   { step = 'assert';  stage('assert', assertAll);
+                             log(bad.length ? '❌ FAIL\n' + bad.join('\n') : '✅ PASS —— 所有断言通过'); return; }
+}
+
+function need() { return win.eval('LETTER_DIGIT[pracWord.letters[pracIdx]]'); }
+function click(k) { win.eval('padPractice.btn(' + k + ').click()'); }
+function snap() {
+  return {
+    word: win.eval('pracWord.hanzi'), pos: win.eval('practicePos'), idx: win.eval('pracIdx'),
+    clicks: win.eval('pracClicks'), wrongCount: win.eval('pracWrong'), done: win.eval('pracDone'),
+    txt: (d.getElementById('pracResult').textContent || '').replace(/\s+/g, ' ').trim()
+  };
+}
+function finishAll() {
+  var g = 0;
+  while (!win.eval('pracDone') && g++ < 30) click(need());
+  return g;
+}
+
+var f = document.getElementById('f');
+f.onload = function () {
+  stage('init', function () {
+    win = f.contentWindow; d = f.contentDocument;
+
+    /* 1) 假 Audio：play() 立刻触发 onended，链条确定性 */
+    function FA() { this.src = ''; this.preload = ''; this.playbackRate = 1; }
+    FA.prototype.load = function () {};
+    FA.prototype.pause = function () {};
+    FA.prototype.play = function () {
+      var s = this;
+      if (this.onended) setTimeout(function () { s.onended(); }, 0);
+      return { catch: function () {} };
+    };
+    win.Audio = FA;
+
+    /* 2) 假 TTS：练习页收尾那句「念整个词」只有 text 没录音，走 speechSynthesis。
+          headless 没有可用语音，真实路径会一直等到 2600ms 兜底，把时间线拉长到没法复现。 */
+    win.SpeechSynthesisUtterance = function (t) { this.text = t; };
+    win.speechSynthesis = {
+      cancel: function () {},
+      getVoices: function () { return []; },
+      speak: function (u) { setTimeout(function () { if (u.onend) u.onend(); }, 0); }
+    };
+
+    /* 3) 只记录自动跳那一档（700–2000ms），别的延时与本轮无关 */
+    dels = [];
+    var realST = win.setTimeout;
+    win.setTimeout = function (fn, ms) {
+      if (ms >= 700 && ms <= 2000) dels.push(ms);
+      return realST.call(win, fn, ms);
+    };
+
+    d.querySelector('.tab[data-page="practice"]').click();
+    d.getElementById('pracRetry').click();
+    log('已切到练习页，第一题=' + win.eval('pracWord.hanzi') + ' / ' + win.eval('pracWord.pinyin'));
+  });
+  next();
+};
+
+/* ---------- 第 1 轮：第一下就点错，再把整词按对 ---------- */
+function round1() {
+  r1.before = snap();
+  pos1 = r1.before.pos;
+  r1.want = need();
+  r1.wrong = (r1.want === 2) ? 3 : 2;          // 错键相对当前期望键挑，不写死
+  click(r1.wrong);
+  r1.afterWrong = snap();
+  r1.badKeyRed = !!d.querySelector('#padPractice .k.is-bad');
+  r1.badSlotRed = !!d.querySelector('#pracSlots .slot.bad');
+  r1.clicks = finishAll();
+  r1.afterDone = snap();
+  r1.mark = dels.length;                        // 排期是异步排的，同步段取不到
+  word1 = r1.afterDone.word;
+  log('第1轮：词=' + word1 + '（' + win.eval('pracWord.pinyin') + '）期望键=' + r1.want
+      + '，先点错 ' + r1.wrong + '，再把整词按对（共 ' + r1.clicks + ' 次点击）\n  → '
+      + JSON.stringify(r1.afterDone));
+}
+
+function afterR1() {
+  r1.scheduled = dels.slice(r1.mark);
+  r1.afterAuto = snap();
+  log('第1轮 自动跳后 → ' + JSON.stringify(r1.afterAuto) + '\n  排期=' + JSON.stringify(r1.scheduled));
+}
+
+/* ---------- 第 2 轮：一次不错 ---------- */
+function round2() {
+  r2.mark = dels.length;
+  pos2 = win.eval('practicePos');
+  r2.clicks = finishAll();
+  r2.afterDone = snap();
+  word2 = r2.afterDone.word;
+  log('第2轮（一次不错）：词=' + word2 + '，按对共 ' + r2.clicks + ' 次点击\n  → '
+      + JSON.stringify(r2.afterDone));
+}
+
+function afterR2() {
+  r2.scheduled = dels.slice(r2.mark);
+  r2.afterAuto = snap();
+  log('第2轮 自动跳后 → ' + JSON.stringify(r2.afterAuto) + '\n  排期=' + JSON.stringify(r2.scheduled));
+}
+
+function assertAll() {
+  /* 点错那一下的反馈不能被改坏 */
+  chk(r1.afterWrong.wrongCount === 1, '点错后错点计数应为 1');
+  chk(r1.afterWrong.done === false, '点错一下不该判完成');
+  chk(r1.badKeyRed === true, '点错的键没有立刻变红');
+  chk(r1.badSlotRed === true, '点错时当前字母槽没有变红');
+
+  /* 核心：中途点错过，整词按对也要自动跳 */
+  chk(r1.afterDone.done === true, '整词按完 pracDone 应为 true');
+  chk(r1.afterDone.wrongCount === 1, '第 1 轮错点计数应为 1');
+  chk(r1.afterDone.txt.indexOf('自动下一题') !== -1, '第 1 轮提示里没有「自动下一题」: ' + r1.afterDone.txt);
+  chk(r1.afterDone.txt.indexOf('点「下一题」') === -1, '第 1 轮还在要求手动点「下一题」: ' + r1.afterDone.txt);
+  chk(has(r1.scheduled, 1600), '第 1 轮没有排 1600ms 的自动跳: ' + r1.scheduled);
+  chk(!has(r1.scheduled, 1000), '第 1 轮不该用 1000ms: ' + r1.scheduled);
+  chk(r1.afterAuto.pos === pos1 + 1, '【核心】practicePos 没前进: ' + pos1 + ' → ' + r1.afterAuto.pos);
+  chk(r1.afterAuto.word !== word1, '【核心】词没换：' + word1 + ' → ' + r1.afterAuto.word);
+  chk(r1.afterAuto.done === false, '【核心】错过一次的题没有自动跳到下一题');
+  chk(r1.afterAuto.idx === 0, '新题 pracIdx 没归零: ' + r1.afterAuto.idx);
+  chk(r1.afterAuto.wrongCount === 0, '新题错点数没归零: ' + r1.afterAuto.wrongCount);
+
+  /* 全对那条老路没被改坏 */
+  chk(r2.afterDone.done === true, '第 2 轮按完 pracDone 应为 true');
+  chk(r2.afterDone.wrongCount === 0, '第 2 轮不该有错点: ' + r2.afterDone.wrongCount);
+  chk(r2.afterDone.txt.indexOf('全对') !== -1, '第 2 轮提示里没有「全对」: ' + r2.afterDone.txt);
+  chk(has(r2.scheduled, 1000), '第 2 轮（全对）没有排 1000ms 的自动跳: ' + r2.scheduled);
+  chk(r2.afterAuto.pos === pos2 + 1, '第 2 轮 practicePos 没前进');
+  chk(r2.afterAuto.word !== word2, '第 2 轮词没换');
+  chk(r2.afterAuto.done === false, '第 2 轮没有自动跳到下一题');
+}
+</script>
+</body></html>

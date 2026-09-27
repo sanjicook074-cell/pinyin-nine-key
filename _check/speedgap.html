@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>speedgap</title>
+<style>body{margin:0;font:11px monospace}iframe{border:0;display:block}</style>
+</head><body>
+<iframe id="f" src="../pinyin-nine-key.html" width="375" height="900"></iframe>
+<pre id="out">pending</pre>
+<script>
+/* 验「调速只管拼、不管字与字之间的那一拍」。不改业务代码，四处记账：
+   ① Audio 换假的：记下 src 与**实际** playbackRate，同步回调 onended
+   ② setTimeout 变同步 + 记排期值
+   ③ buildDemoSteps 的结果上盖 kind（han = 整字步 / seg = 字母步），
+      再包 playClip / voiceAndWait 把 kind 和调用时传的 rate 一起记下
+   ④ speakWordOf 期间置 IN_WORD，把结尾整词朗读也认出来
+   于是"整字读音到底有没有跟着滑块变"变成可以逐个比对的数字。 */
+function go() {
+ try {
+  var fr = document.getElementById('f');
+  var d = fr.contentDocument, win = fr.contentWindow;
+  var R = {}, bad = [], IN_WORD = false;
+  var LOG;
+
+  function FakeAudio() {
+    var self = this;
+    this.playbackRate = 1; this.preload = ''; this._src = '';
+    this.onended = null; this.onerror = null;
+    Object.defineProperty(this, 'src', {
+      get: function () { return self._src; },
+      set: function (v) { self._src = v; }
+    });
+    this.load = this.pause = function () {};
+    this.play = function () {
+      LOG.played.push({ src: self._src, rate: self.playbackRate });
+      if (self.onended) self.onended();
+      return { catch: function () {} };
+    };
+  }
+  win.Audio = FakeAudio;
+
+  win.setTimeout = function (fn, delay) {
+    if (typeof delay === 'number' && delay > 0) LOG.delays.push(delay);
+    if (typeof fn === 'function') fn();
+    return 0;
+  };
+
+  /* 每次调用 playClip 之前先定好 kind：voiceAndWait 先设 CUR_KIND，再调 playClip */
+  var CUR_KIND = '?';
+  var realPC = win.playClip;
+  win.playClip = function (name, cb, rate) {
+    LOG.clips.push({ name: name, kind: CUR_KIND, arg: rate });   // 先记，顺序才和 LOG.played 对得上
+    return realPC.call(win, name, cb, rate);
+  };
+  var realVAW = win.voiceAndWait;
+  win.voiceAndWait = function (item, cb, rate) {
+    CUR_KIND = (item && item.__kind) || (IN_WORD ? 'word' : 'other');
+    return realVAW.call(win, item, cb, rate);
+  };
+  var realSW = win.speakWordOf;
+  win.speakWordOf = function (w, cb, rate) {
+    IN_WORD = true;
+    try { return realSW.call(win, w, cb, rate); } finally { IN_WORD = false; }
+  };
+  /* 把步骤表里的 voice 对象盖上 kind —— 标签来自应用自己的排期表，不是我们猜的 */
+  var realBuild = win.buildDemoSteps;
+  win.buildDemoSteps = function (w) {
+    var steps = realBuild.call(win, w);
+    steps.forEach(function (s) { if (s.voice) s.voice.__kind = (s.part === 'syl') ? 'han' : 'seg'; });
+    return steps;
+  };
+
+  var pulses = [];
+  var pad = win.eval('padDemo');
+  var realPulse = pad.pulse;
+  pad.pulse = function (dig, ms, ch) { pulses.push(ms); return realPulse.call(pad, dig, ms, ch); };
+
+  function setRate(v) {
+    var el = d.getElementById('demoSpeed');
+    el.value = String(v);
+    el.dispatchEvent(new win.Event('input', { bubbles: true }));
+    return win.eval('demoRate');
+  }
+  function uniq(a) {
+    return a.filter(function (x, i) { return a.indexOf(x) === i; }).sort(function (a, b) { return a - b; });
+  }
+  function pick(o, keys) {
+    var r = {}; keys.forEach(function (k) { r[k] = o[k]; }); return r;
+  }
+  /* 跑一遍当前词。词相关的数字一律在点击**之前**取 —— 播完会自动跳下一个词 */
+  function run() {
+    win.eval('demoPlaying = false; demoIndex = 0; demoWord = WORDS[0]; renderDemoWord();');
+    var meta = win.eval('({ hanzi: demoWord.hanzi, syls: demoWord.sylInfo.length,'
+                      + ' letters: buildDemoSteps(demoWord).filter(function(s){return s.part!=="syl"}).length,'
+                      + ' segVoices: buildDemoSteps(demoWord).filter(function(s){return s.part!=="syl" && !!s.voice}).length })');
+    LOG = { clips: [], played: [], delays: [] };
+    pulses = [];
+    d.getElementById('demoPlay').click();
+    var finished = !win.eval('demoPlaying');
+    win.eval('cancelAutoNext();');               // 别让它换词干扰后面的读数
+    /* 把 kind 相同的剪辑归拢：拿到的调用速率 + 元素上实际的播放速率 */
+    function agg(kinds) {
+      var out = { names: [], args: [], played: [] };
+      LOG.clips.forEach(function (c, i) {
+        if (kinds.indexOf(c.kind) === -1) return;
+        out.names.push(c.name);
+        out.args.push(c.arg === undefined ? 'follow' : c.arg);
+        out.played.push(LOG.played[i] && LOG.played[i].rate);
+      });
+      return out;
+    }
+    return {
+      rate: win.eval('demoRate'),
+      hanzi: meta.hanzi, syls: meta.syls, letters: meta.letters, segVoices: meta.segVoices,
+      finished: finished,
+      han: agg(['han']), word: agg(['word']), seg: agg(['seg']), other: agg(['other', '?']),
+      /* 4500 = 播放兜底、200 = 剪辑收尾、900 = 自动跳词：本来就与速度无关 */
+      delays: uniq(LOG.delays.filter(function (x) { return x >= 140 && x <= 2100 && x !== 200 && x !== 900; })),
+      pulses: uniq(pulses), pulseCount: pulses.length
+    };
+  }
+
+  /* ---------- A1 滑块本身 ---------- */
+  var el = d.getElementById('demoSpeed');
+  R.slider = { min: el.min, max: el.max, step: el.step, value: el.value,
+               text: d.getElementById('demoSpeedVal').textContent };
+  if (el.min !== '0.4' || el.max !== '1.6' || el.step !== '0.2') bad.push('滑块范围不对');
+  var mid = (parseFloat(el.value) - parseFloat(el.min)) / (parseFloat(el.max) - parseFloat(el.min));
+  if (Math.abs(mid - 0.5) > 1e-6) bad.push('1.0× 不在滑块正中: ' + mid);
+  if (R.slider.text !== '1.0×') bad.push('默认档位显示不对: ' + R.slider.text);
+
+  d.querySelector('.tab[data-page="demo"]').click();
+  win.eval('demoIndex = 0; demoWord = WORDS[0]; renderDemoWord(); cancelAutoNext();');
+
+  /* ---------- A2 排期表本身：整字那一步不带停留、标了 plain ---------- */
+  R.steps = win.eval('buildDemoSteps(demoWord).map(function(s){return [s.part, s.hold, !!s.plain];})');
+  var sylSteps = R.steps.filter(function (s) { return s[0] === 'syl'; });
+  var letSteps = R.steps.filter(function (s) { return s[0] !== 'syl'; });
+  R.wordSteps = win.eval('demoWord.hanzi');
+  if (!sylSteps.length || !letSteps.length) bad.push('步骤表里没有整字步/字母步');
+  sylSteps.forEach(function (s) {
+    if (s[1] !== 0) bad.push('整字步还带停留 ' + s[1] + '（应 0，否则会被除以 demoRate）');
+    if (!s[2]) bad.push('整字步没标 plain（读音会跟着滑块走）');
+  });
+  letSteps.forEach(function (s) {
+    if (s[1] !== 560) bad.push('字母步停留不是 560: ' + s[1]);
+    if (s[2]) bad.push('字母步被标成 plain（拼读就不跟滑块了）');
+  });
+  R.sylStepCount = sylSteps.length;
+  R.letterStepCount = letSteps.length;
+  if (sylSteps.length !== win.eval('demoWord.sylInfo.length')) bad.push('整字步数 ≠ 音节数');
+
+  /* ---------- A3 三档速度各跑一遍 ---------- */
+  var slow = (function () { setRate(0.4); return run(); })();
+  var norm = (function () { setRate(1);   return run(); })();
+  var fast = (function () { setRate(1.6); return run(); })();
+  R.slow = slow; R.norm = norm; R.fast = fast;
+  R.word = norm.hanzi;
+
+  [slow, norm, fast].forEach(function (r) {
+    if (!r.finished) bad.push(r.rate + '× 没跑完');
+    if (r.other.names.length) bad.push(r.rate + '× 有没归类的读音: ' + r.other.names);
+    /* 数量：整字读音 = 每音节一次 + 结尾整词一次；拼读 = 字母数 */
+    if (r.han.names.length !== r.syls) bad.push(r.rate + '× 整字读音段数 ' + r.han.names.length + ' ≠ 音节数 ' + r.syls);
+    if (r.word.names.length !== r.syls) bad.push(r.rate + '× 整词朗读段数 ' + r.word.names.length + ' ≠ 音节数 ' + r.syls);
+    if (r.seg.names.length !== r.segVoices) bad.push(r.rate + '× 拼读段数 ' + r.seg.names.length + ' ≠ 带音的字母步数 ' + r.segVoices);
+    /* ⭐ 核心：整字 / 整词 一律 1×（调用值与元素实际值都要是 1）；拼读一律滑块值 */
+    var pin = r.han.played.concat(r.word.played);
+    if (pin.join(',') !== pin.map(function () { return 1; }).join(',')) {
+      bad.push(r.rate + '× 整字/整词读音的实际速率不是 1: ' + pin);
+    }
+    if (uniq(r.han.args.concat(r.word.args)).join(',') !== '1') {
+      bad.push(r.rate + '× 整字/整词读音的调用速率不是 1: ' + uniq(r.han.args.concat(r.word.args)));
+    }
+    if (uniq(r.seg.played).join(',') !== String(r.rate)) bad.push(r.rate + '× 拼读实际速率不是 ' + r.rate + ': ' + uniq(r.seg.played));
+    if (uniq(r.seg.args).join(',') !== String(r.rate)) bad.push(r.rate + '× 拼读调用速率不是 ' + r.rate + ': ' + uniq(r.seg.args));
+    /* 排期：4500/200/900 之外的延迟折算回 1× 只能是 340(键亮) 或 560(停留)。
+       容差 2ms —— 键亮 340/1.6=212.5 取 213（折回 340.8），
+       另外虚拟钟偶尔在两步之间跳 1ms，于是出现 1399/349 这种"差一毫秒"的重复值。 */
+    var near = function (v, t) { return Math.abs(v - t) <= 2; };
+    var folded = r.delays.map(function (x) { return x * r.rate; });
+    var okFold = folded.length >= 2 &&
+                 folded.every(function (f) { return near(f, 340) || near(f, 560); }) &&
+                 folded.some(function (f) { return near(f, 340); }) &&
+                 folded.some(function (f) { return near(f, 560); });
+    if (!okFold) bad.push(r.rate + '× 折算排期不对: ' + r.delays + ' → ' + folded);
+    if (r.pulseCount !== r.letters) bad.push(r.rate + '× 脉冲次数 ' + r.pulseCount + ' ≠ 字母数 ' + r.letters);
+  });
+  if (slow.pulses.join(',') !== String(Math.round(340 / 0.4))) bad.push('0.4× 键亮时长不对: ' + slow.pulses);
+  if (fast.pulses.join(',') !== String(Math.max(140, Math.round(340 / 1.6)))) bad.push('1.6× 键亮时长不对: ' + fast.pulses);
+  if (norm.pulses.join(',') !== '340') bad.push('1× 键亮时长不对: ' + norm.pulses);
+
+  /* ---------- A4 liveRateTracks：正在播哪一段，滑块该不该动它 ---------- */
+  win.eval('liveAudio = null; liveRateTracks = null;');
+  win.playClip('ne4', function () {});
+  R.tracksFollow = win.eval('liveRateTracks');
+  if (R.tracksFollow !== true) bad.push('跟随滑块的剪辑没把 liveRateTracks 置 true');
+  win.playClip('ni3', function () {}, 1);
+  R.tracksPinned = win.eval('liveRateTracks');
+  if (R.tracksPinned !== false) bad.push('钉死速率的剪辑没把 liveRateTracks 置 false');
+
+  /* 拖滑块时：整字读音在播 → 不许动；拼读在播 → 立刻跟 */
+  win.eval('liveAudio = { playbackRate: 1 };');           // liveRateTracks 仍是 false
+  setRate(1.6);
+  R.pinnedDuringDrag = win.eval('liveAudio.playbackRate');
+  win.eval('liveAudio = { playbackRate: 1 }; liveRateTracks = true;');
+  setRate(0.4);
+  R.followDuringDrag = win.eval('liveAudio.playbackRate');
+  win.eval('liveAudio = null; liveRateTracks = false;');
+  setRate(1);
+  if (R.pinnedDuringDrag !== 1) bad.push('拖动滑块把正在播的整字读音改了速率: ' + R.pinnedDuringDrag);
+  if (R.followDuringDrag !== 0.4) bad.push('拖动滑块没有实时改拼读速率: ' + R.followDuringDrag);
+
+  /* ---------- A5 别的页不受影响 ---------- */
+  d.querySelector('.tab[data-page="practice"]').click();
+  R.voiceRateAfterLeave = win.eval('voiceRate');
+  if (R.voiceRateAfterLeave !== 1) bad.push('离开示范页后 voiceRate 没还原');
+  /* 别的页读整词没有钉死速率，voiceRate 已是 1 —— 行为不变 */
+  win.eval('var _c = []; var _r = voiceRate; speakWordOf(pracWord);');
+  R.pracRate = win.eval('voiceRate');
+
+  R.problems = bad;
+  R.ok = bad.length === 0;
+  document.getElementById('out').textContent = JSON.stringify(R, null, 1);
+  document.title = bad.length ? 'FAIL:' + bad.length : 'PASS';
+ } catch (e) {
+  document.getElementById('out').textContent = 'ERR ' + (e && (e.stack || e));
+  document.title = 'ERR';
+ }
+}
+var f0 = document.getElementById('f');
+if (f0.contentDocument && f0.contentDocument.querySelector && f0.contentDocument.querySelector('.tab')) go();
+else f0.addEventListener('load', go);
+</script>
+</body></html>

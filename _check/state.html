@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>state</title>
+<style>body{margin:0;font:11px monospace}iframe{border:0;display:block}</style>
+</head><body>
+<iframe id="f" src="../pinyin-nine-key.html" width="375" height="900"></iframe>
+<pre id="out">pending</pre>
+<script>
+/* 状态色回归。
+   口径（第 21 轮改过）：**状态色落在字母上，键本体只收一层淡底 + 描边**。
+   所以这里同时检查两个元素：键（淡底）和字母（实心色块 + 白字）。 */
+document.getElementById('f').addEventListener('load', function () {
+  var d = document.getElementById('f').contentDocument;
+  var win = document.getElementById('f').contentWindow;
+  var R = {}, bad = [];
+
+  /* headless + virtual time 不推进 CSS transition，
+     直接读 computed 会拿到过渡起始色（假象）。全关掉。 */
+  var kill = d.createElement('style');
+  kill.textContent = '*{transition:none !important;animation:none !important}';
+  d.head.appendChild(kill);
+
+  var LAY = [1, 2, 3, 4, 5, 6, 7, 8, 9, '*', 0, '#'];
+  function keyIn(padId, dig) { return d.querySelectorAll('#' + padId + ' .k')[LAY.indexOf(Number(dig))]; }
+  function cs(el, p) { return win.getComputedStyle(el)[p]; }
+  function letterIn(padId, dig, ch) {
+    return Array.prototype.filter.call(keyIn(padId, dig).querySelectorAll('.kch'), function (x) {
+      return x.dataset.ch === String(ch).toUpperCase();
+    })[0];
+  }
+
+  var BLUE = 'rgb(59, 130, 246)', GREEN = 'rgb(16, 185, 129)', RED = 'rgb(239, 68, 68)';
+  var KEY_ACTIVE = 'rgb(234, 241, 255)', KEY_OK = 'rgb(232, 248, 241)', KEY_BAD = 'rgb(253, 236, 236)';
+  var UNSET = 'rgba(0, 0, 0, 0)', WHITE = 'rgb(255, 255, 255)';
+
+  /* 1) 键面有没有数字残留 */
+  R.keyTexts = Array.prototype.map.call(d.querySelectorAll('#padBasic .k'), function (b) {
+    return b.innerText.replace(/\s+/g, '');
+  });
+  R.knumNodes = d.querySelectorAll('.k-num').length;
+  R.cssHasKnum = /\.k-num/.test(d.querySelector('style').textContent);
+  if (R.knumNodes) bad.push('.k-num 节点还在 DOM 里');
+  if (R.cssHasKnum) bad.push('CSS 里还留着 .k-num');
+  if (R.keyTexts.join(',') !== '#,ABC,DEF,GHI,JKL,MNO,PQRS,TUV,WXYZ,符号,空格,#') {
+    bad.push('键面文字不对: ' + R.keyTexts.join(','));
+  }
+
+  /* 2) 练习页：按对 → 只有那个字母绿；按错 → 整个键的字母红。
+     期望值从应用内部读，不写死（练习页的词是轮转的）。 */
+  d.querySelector('.tab[data-page="practice"]').click();
+  var need = win.eval('pracWord.letters[pracIdx]');
+  var want = win.eval('LETTER_DIGIT[pracWord.letters[pracIdx]]');
+  R.wantDigit = want; R.wantLetter = need;
+  R.word = win.eval('pracWord.hanzi + " " + pracWord.pinyin');
+
+  var okBtn = keyIn('padPractice', want);
+  okBtn.click();
+  var okLet = letterIn('padPractice', want, need);
+  var sib = Array.prototype.filter.call(okBtn.querySelectorAll('.kch'), function (x) { return x !== okLet; });
+  R.okClass = okBtn.className;
+  R.okKeyBg = cs(okBtn, 'backgroundColor');
+  R.okLetterBg = cs(okLet, 'backgroundColor');
+  R.okLetterColor = cs(okLet, 'color');
+  R.okSibBg = sib.map(function (x) { return cs(x, 'backgroundColor'); }).join('|') || '(只有一个字母)';  if (R.okClass.indexOf('is-ok') === -1) bad.push('点对了键没进 is-ok');
+  if (R.okKeyBg !== KEY_OK) bad.push('点对了键底该是淡绿 ' + KEY_OK + '，实际 ' + R.okKeyBg);
+  if (R.okLetterBg !== GREEN) bad.push('点对了那个字母该是实心绿 ' + GREEN + '，实际 ' + R.okLetterBg);
+  if (R.okLetterColor !== WHITE) bad.push('绿色字母字色该是白的，实际 ' + R.okLetterColor);
+  /* 兄弟字母可能不止一个，逐个比，不能拿拼接后的字符串去等一个颜色 */
+  if (sib.length && sib.some(function (x) { return cs(x, 'backgroundColor') !== UNSET; })) {
+    bad.push('同一个键上没被点到的字母不该有底色: ' + R.okSibBg);
+  }
+
+  /* 错键必须相对"下一个该按的键"来挑 —— 写死数字会撞上正确答案（栽过两次） */
+  var nextWant = win.eval('LETTER_DIGIT[pracWord.letters[pracIdx]]');
+  var wrongDig = nextWant === 2 ? 3 : 2;
+  R.nextWant = nextWant; R.wrongDig = wrongDig;
+  var badBtn = keyIn('padPractice', wrongDig);
+  badBtn.click();
+  R.badClass = badBtn.className;
+  R.badKeyBg = cs(badBtn, 'backgroundColor');
+  R.badLettersBg = Array.prototype.map.call(badBtn.querySelectorAll('.kch'), function (x) {
+    return cs(x, 'backgroundColor');
+  }).join('|');
+  if (R.badClass.indexOf('is-bad') === -1) bad.push('点错了键没进 is-bad');
+  if (R.badKeyBg !== KEY_BAD) bad.push('点错了键底该是淡红 ' + KEY_BAD + '，实际 ' + R.badKeyBg);
+  if (R.badLettersBg.split('|').some(function (c) { return c !== RED; })) {
+    bad.push('按错时整键字母都该变红，实际 ' + R.badLettersBg);
+  }
+  if (R.okKeyBg === BLUE || R.badKeyBg === RED) bad.push('键本体还被整块染色（应该只给淡底）');
+
+  /* 3) 基础页：点键面空白 → 该组第一个字母亮蓝，键只给淡底 */
+  d.querySelector('.tab[data-page="basic"]').click();
+  var b1 = keyIn('padBasic', 9);
+  b1.click();                                  // 9 键 = WXYZ，念到哪个亮哪个
+  var firstLit = Array.prototype.filter.call(b1.querySelectorAll('.kch'), function (x) {
+    return x.classList.contains('is-active');
+  }).map(function (x) { return x.dataset.ch; });
+  R.activeClass = b1.className;
+  R.activeKeyBg = cs(b1, 'backgroundColor');
+  R.activeLit = firstLit.join('');
+  R.activeLetterBg = firstLit.length ? cs(letterIn('padBasic', 9, firstLit[0]), 'backgroundColor') : '(没亮)';
+  R.activeLetterColor = firstLit.length ? cs(letterIn('padBasic', 9, firstLit[0]), 'color') : '(没亮)';
+  if (R.activeClass.indexOf('is-active') === -1) bad.push('基础页点键没亮');
+  if (R.activeKeyBg !== KEY_ACTIVE) bad.push('基础页键底该是淡蓝 ' + KEY_ACTIVE + '，实际 ' + R.activeKeyBg);
+  if (R.activeLit !== 'W') bad.push('点 9 键该亮第一个字母 W，实际亮的是 ' + R.activeLit);
+  if (R.activeLetterBg !== BLUE) bad.push('亮着的字母该是实心蓝，实际 ' + R.activeLetterBg);
+  if (R.activeLetterColor !== WHITE) bad.push('亮着的字母字色该是白的，实际 ' + R.activeLetterColor);
+
+  /* 4) 「亮一下就灭」不能变：连按同一个键，两次都必须亮得起来 */
+  b1.classList.remove('is-active');
+  var pad = win.eval('padBasic');
+  var seq = [];
+  pad.pulse('9', 60, 'W');
+  seq.push(letterIn('padBasic', 9, 'W').classList.contains('is-active'));
+  pad.pulse('9', 60, 'W');
+  seq.push(letterIn('padBasic', 9, 'W').classList.contains('is-active'));
+  R.pulseSeq = seq;
+  if (seq.join(',') !== 'true,true') bad.push('同一键连按没有保持闪亮: ' + seq.join(','));
+
+  /* 5) 同一个键上换字母：前一个必须**立刻**灭，不能两个一起亮 */
+  var padD = win.eval('padDemo');
+  padD.clearActive();
+  padD.pulse(2, 340, 'B');
+  padD.pulse(2, 340, 'A');
+  R.swapLit = Array.prototype.filter.call(keyIn('padDemo', 2).querySelectorAll('.kch'), function (x) {
+    return x.classList.contains('is-active');
+  }).map(function (x) { return x.dataset.ch; }).join('');
+  if (R.swapLit !== 'A') bad.push('换字母后同时亮着: ' + R.swapLit + '（应只有 A）');
+
+  R.problems = bad;
+  document.getElementById('out').textContent = JSON.stringify(R, null, 1);
+  document.title = 'done';
+});
+</script>
+</body></html>

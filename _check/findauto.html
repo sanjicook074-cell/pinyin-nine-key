@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>找键页自动跳题验证</title>
+<style>body{margin:8px;background:#c9d4e4;font:13px/1.5 monospace}
+iframe{width:375px;height:700px;border:0;display:block;margin:0 auto;background:#fff}
+pre{background:#fff;padding:8px;white-space:pre-wrap}</style></head>
+<body>
+<iframe id="f" src="../pinyin-nine-key.html"></iframe>
+<pre id="out">running…</pre>
+<script>
+var OUT = document.getElementById('out');
+var LINES = [], bad = [], win = null, d = null;
+
+function log(s) { LINES.push(s); OUT.textContent = LINES.join('\n'); }
+function chk(cond, msg) { if (!cond) bad.push(msg); }
+function has(a, v) { return a.indexOf(v) !== -1; }
+
+/* 每一段都单独兜异常：定时器回调里抛错不会被外层 try 抓到，
+   之前就是栽在这儿 —— 输出停在最后一个同步 say，看着像"没跑" */
+function stage(name, fn) {
+  try { fn(); }
+  catch (e) { bad.push('[' + name + '] 抛异常: ' + e.message); log('❌ ' + name + ' 抛异常: ' + e.message + '\n' + (e.stack || '')); }
+}
+
+var f = document.getElementById('f');
+f.onload = function () {
+  stage('init', function () {
+    win = f.contentWindow; d = f.contentDocument;
+
+    /* 1) 把 iframe 里的 Audio 换成假的：play() 立刻触发 onended。
+          整条「放完 → 自动跳」的链变成确定性的，不依赖网络和声卡。 */
+    function FA() { this.src = ''; this.preload = ''; this.playbackRate = 1; }
+    FA.prototype.load = function () {};
+    FA.prototype.pause = function () {};
+    FA.prototype.play = function () {
+      var s = this;
+      if (this.onended) setTimeout(function () { s.onended(); }, 0);
+      return { catch: function () {} };
+    };
+    win.Audio = FA;
+
+    /* 2) 记录排期时长，用来分辨「错过 → 多留一拍 1500」和「全对 → 800」 */
+    dels = [];
+    var realST = win.setTimeout;
+    win.setTimeout = function (fn, ms) {
+      if (ms >= 700 && ms <= 2000) dels.push(ms);
+      return realST.call(win, fn, ms);
+    };
+
+    // 钩子自检：先在 iframe 里排一个 1234ms 的定时，看记不记得下来
+    win.eval('setTimeout(function(){},1234)');
+    log('钩子自检: ' + JSON.stringify(dels) + '  (win.setTimeout 还是原生吗: '
+        + (String(win.setTimeout).indexOf('dels.push') !== -1) + ')');
+
+    d.querySelector('.tab[data-page="find"]').click();
+    log('已切到找键页，当前题=' + win.eval('findUnit'));
+  });
+  if (bad.length) return;
+  stage('round1-sync', round1);
+  if (bad.length) return;
+  setTimeout(function () {
+    stage('round1-after-auto', round1AfterAuto);
+    if (bad.length) return;
+    stage('round2-sync', round2);
+    if (bad.length) return;
+    setTimeout(function () {
+      stage('round2-after-auto', round2AfterAuto);
+      stage('assert', assertAll);
+      log(bad.length ? '❌ FAIL\n' + bad.join('\n') : '✅ PASS —— 所有断言通过');
+    }, 2600);
+  }, 2600);
+};
+
+var dels, r1 = {}, r2 = {}, unit1, unit2;
+
+function pick() { return win.eval('LETTER_DIGIT[findUnit.charAt(findPos)]'); }
+function click(k) { win.eval('padFind.btn(' + k + ').click()'); }
+function snap() {
+  return {
+    unit: win.eval('findUnit'), over: win.eval('findOver'), clean: win.eval('findClean'),
+    pos: win.eval('findPos'), done: win.eval('findStatDone'), wrongCount: win.eval('findStatWrong'),
+    txt: (d.getElementById('findResult').textContent || '').replace(/\s+/g, ' ').trim()
+  };
+}
+function finishAll() {
+  var g = 0;
+  while (!win.eval('findOver') && g++ < 20) click(pick());
+  return g;
+}
+
+/* ---------- 第 1 轮：第一次就点错，然后按对 ---------- */
+function round1() {
+  r1.unitBefore = win.eval('findUnit');
+  r1.want = pick();
+  r1.wrong = (r1.want === 2) ? 3 : 2;          // 错键相对当前期望键挑，绝不写死
+  click(r1.wrong);
+  r1.afterWrong = snap();
+  r1.badKeyRed = !!d.querySelector('#padFind .k.is-bad');
+  r1.clicks = finishAll();
+  r1.afterDone = snap();
+  r1.mark = dels.length;        // 自动跳的定时器是异步排的（放完音 200ms 后），同步段取不到
+  unit1 = r1.afterDone.unit;
+  log('第1轮：题=' + r1.unitBefore + ' 期望键=' + r1.want + ' 先点错 ' + r1.wrong
+      + '，再按对（共 ' + r1.clicks + ' 次点击）→ ' + JSON.stringify(r1.afterDone));
+}
+
+function round1AfterAuto() {
+  r1.scheduled = dels.slice(r1.mark);   // 到这儿自动跳已经排过并触发过了
+  r1.afterAuto = snap();
+  log('第1轮 自动跳后 → ' + JSON.stringify(r1.afterAuto) + ' 排期=' + JSON.stringify(r1.scheduled));
+}
+
+/* ---------- 第 2 轮：一次不错 ---------- */
+function round2() {
+  r2.mark = dels.length;
+  r2.clicks = finishAll();
+  r2.afterDone = snap();
+  unit2 = r2.afterDone.unit;
+  log('第2轮（一次不错）：按对共 ' + r2.clicks + ' 次 → ' + JSON.stringify(r2.afterDone));
+}
+
+function round2AfterAuto() {
+  r2.scheduled = dels.slice(r2.mark);
+  r2.afterAuto = snap();
+  log('第2轮 自动跳后 → ' + JSON.stringify(r2.afterAuto) + ' 排期=' + JSON.stringify(r2.scheduled));
+}
+
+function assertAll() {
+  /* 点错那一下的表现不能被这次改动破坏 */
+  chk(r1.afterWrong.clean === false, '点错后 findClean 应为 false');
+  chk(r1.afterWrong.wrongCount === 1, '点错后错点计数应为 1');
+  chk(r1.afterWrong.over === false, '点错一下不该直接判完成');
+  chk(r1.badKeyRed === true, '点错的键没有立刻变红');
+  chk(d.querySelectorAll('#padFind .k').length === 12, '键盘键数应为 12');
+
+  /* 核心：中途点错过，最后按对也要自动跳 */
+  chk(r1.afterDone.over === true, '按对之后 findOver 应为 true');
+  chk(r1.afterDone.clean === false, '第 1 轮确实错过一次');
+  chk(r1.afterDone.txt.indexOf('自动下一题') !== -1, '第 1 轮提示里没有「自动下一题」: ' + r1.afterDone.txt);
+  chk(r1.afterDone.txt.indexOf('点「下一题」') === -1, '第 1 轮还在要求手动点「下一题」: ' + r1.afterDone.txt);
+  chk(has(r1.scheduled, 1500), '第 1 轮没有排 1500ms 的自动跳: ' + r1.scheduled);
+  chk(!has(r1.scheduled, 800), '第 1 轮不该用 800ms: ' + r1.scheduled);
+  chk(r1.afterAuto.over === false, '【核心】错过一次的题没有自动跳到下一题');
+  chk(r1.afterAuto.unit !== unit1, '【核心】题目没换：' + unit1 + ' → ' + r1.afterAuto.unit);
+  chk(r1.afterAuto.pos === 0, '新题 findPos 没归零: ' + r1.afterAuto.pos);
+  chk(r1.afterAuto.clean === true, '新题 findClean 没复位');
+  chk(r1.afterAuto.done === 1, '自动跳后已答应为 1（不能重复计数）: ' + r1.afterAuto.done);
+
+  /* 全对那条老路没被改坏 */
+  chk(r2.afterDone.clean === true, '第 2 轮一次没错，findClean 应为 true');
+  chk(r2.afterDone.wrongCount === 1, '第 2 轮不该新增错点（合计仍 1）: ' + r2.afterDone.wrongCount);
+  chk(r2.afterDone.txt.indexOf('全对') !== -1, '第 2 轮提示里没有「全对」: ' + r2.afterDone.txt);
+  chk(has(r2.scheduled, 800), '第 2 轮（全对）没有排 800ms 的自动跳: ' + r2.scheduled);
+  chk(r2.afterAuto.over === false, '第 2 轮没有自动跳到下一题');
+  chk(r2.afterAuto.unit !== unit2, '第 2 轮题目没换');
+  chk(r2.afterAuto.done === 2, '第 2 轮已答应为 2: ' + r2.afterAuto.done);
+}
+</script>
+</body></html>

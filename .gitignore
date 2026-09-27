@@ -1,0 +1,19 @@
+# WorkBuddy 项目内部数据（AI 工作日志等，不随项目分发）
+.workbuddy/
+
+# 发布副本：与源文件 pinyin-nine-key.html 逐字节相同，由 cp 生成，不重复入库
+dist/
+
+# 语法检查时临时导出的 script 块
+_check/_tmp_*.js
+
+# 系统 / 编辑器 / Python
+Thumbs.db
+Desktop.ini
+.DS_Store
+__pycache__/
+*.pyc
+.idea/
+.vscode/
+*.swp
+*~

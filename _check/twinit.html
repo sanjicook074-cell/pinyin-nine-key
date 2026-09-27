@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>两字母声母 zh/ch/sh 发音验证</title>
+<style>body{margin:8px;background:#c9d4e4;font:13px/1.55 monospace}
+iframe{width:375px;height:700px;border:0;display:block;margin:0 auto;background:#fff}
+pre{background:#fff;padding:8px;white-space:pre-wrap}</style></head>
+<body>
+<iframe id="f" src="../pinyin-nine-key.html"></iframe>
+<pre id="out">running…</pre>
+<script>
+var OUT = document.getElementById('out'), LINES = [], bad = [];
+
+function log(s) { LINES.push(s); OUT.textContent = LINES.join('\n'); }
+function chk(c, m) { if (!c) bad.push(m); }
+function stage(n, fn) {
+  try { fn(); }
+  catch (e) { bad.push('[' + n + '] 抛异常: ' + e.message + ' @' + (e.stack || '').split('\n')[1]); log('❌ ' + n + ' 异常: ' + e.message); }
+}
+
+/* 记录「这一键按下去，应用到底要念哪些东西」。
+   钩 voiceSeq 而不是假造 Audio：voiceSeq 每次调用就是一个完整的发音批次
+   （一次点击 = 一次调用），比听 Audio 的 src 干净，也不会被 warmAudio 的预加载污染。 */
+var SPOKEN = [], clickNo = -1;
+
+/* 假 Audio：让每一段播放**立即完成**。
+   真 <audio> 在无头里没有音频设备，onended 不一定回调，链会卡在 4500ms 兜底上。
+   为什么现在非得要它：整词朗读改成了「拼读批播完之后」发起的**第二批** voiceSeq，
+   属于异步链 —— 不把链推快，就永远等不到那一批。 */
+function FakeAudio() {
+  var self = this;
+  this.src = ''; this.muted = false; this.playbackRate = 1; this.preload = '';
+  this.onended = null; this.onerror = null;
+  this.play = function () {
+    setTimeout(function () { if (self.onended) self.onended(); }, 0);
+    return Promise.resolve();
+  };
+  this.pause = function () {};
+  this.load = function () {};
+  this.addEventListener = function () {};
+  this.removeEventListener = function () {};
+}
+function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+document.getElementById('f').onload = async function () {
+  var f = document.getElementById('f');
+  var win = f.contentWindow, d = f.contentDocument;
+  if (!win.eval) { log('❌ 拿不到 iframe 的 eval'); return; }
+  var realSeq = win.voiceSeq;
+  if (typeof realSeq !== 'function') { log('❌ 拿不到 win.voiceSeq'); return; }
+  win.voiceSeq = function (items, onDone) {
+    SPOKEN.push({ click: clickNo, items: (items || []).map(function (it) {
+      return (it.audio || '~') + '|' + (it.text || '');
+    }) });
+    return realSeq.call(win, items, onDone);
+  };
+  win.Audio = FakeAudio;              // 必须在第一次点击之前换掉（player 是懒创建的）
+
+  stage('示范页：每段的读音位置', function () { checkDemo(win); });
+  var words = ['中国', '老师', '苹果'];
+  for (var i = 0; i < words.length; i++) {
+    try { await checkPractice(win, words[i]); }
+    catch (e) {
+      bad.push('[' + words[i] + '] 抛异常: ' + e.message);
+      log('❌ ' + words[i] + ' 异常: ' + e.message);
+    }
+  }
+
+  log(bad.length ? '\n❌ FAIL\n' + bad.join('\n') : '\n✅ PASS —— 所有断言通过');
+};
+
+/* ---------- 一、示范页：每段只在「最后一个字母」念一次 ---------- */
+function checkDemo(win) {
+  var res = win.eval("WORDS.map(function(w){return {h:w.hanzi, steps:buildDemoSteps(w).map("
+    + "function(s){return s.part+':'+s.li+(s.voice?'+v':'');})};})");
+  chk(res && res.length === 16, 'WORDS 不是 16 个（拿到 ' + (res && res.length) + '）');
+
+  res.forEach(function (r) {
+    log('示范「' + r.h + '」 ' + r.steps.join(' '));
+    /* 相邻同 part 的步骤属于同一段（顺序恒为 ini… → fin… → syl） */
+    var segs = [];
+    r.steps.forEach(function (s) {
+      var part = s.split(':')[0], v = /\+v$/.test(s);
+      if (!segs.length || segs[segs.length - 1].part !== part) segs.push({ part: part, items: [] });
+      segs[segs.length - 1].items.push(v);
+    });
+    segs.forEach(function (g) {
+      var n = g.items.filter(Boolean).length;
+      chk(n === 1, r.h + ' 的 ' + g.part + ' 段有 ' + n + ' 步带读音（应恰好 1）: ' + JSON.stringify(g.items));
+      chk(g.items[g.items.length - 1] === true,
+          r.h + ' 的 ' + g.part + ' 段：读音不在最后一步 ' + JSON.stringify(g.items));
+      g.items.slice(0, -1).forEach(function (v, i) {
+        chk(!v, r.h + ' 的 ' + g.part + ' 段第 ' + i + ' 步就发音了 ' + JSON.stringify(g.items));
+      });
+    });
+  });
+}
+
+/* ---------- 二、练习页：把整词逐键点一遍，记录每一键的发声 ---------- */
+function forceWord(win, hanzi) {
+  win.eval("(function(){var i=-1;for(var k=0;k<WORDS.length;k++){if(WORDS[k].hanzi==='" + hanzi + "')i=k;}"
+         + "practiceOrder=[i];practicePos=0;loadPractice();})()");
+  return win.eval('pracWord.letters');
+}
+
+async function checkPractice(win, hanzi) {
+  var letters = forceWord(win, hanzi);
+  var info   = win.eval('pracWord.sylInfo');
+  var starts = win.eval('pracWord.sylStart');
+  if (!letters) { chk(false, hanzi + ' 载入失败'); return; }
+
+  SPOKEN = [];
+  var perClick = [];
+  for (var i = 0; i < letters.length; i++) {
+    var before = SPOKEN.length;
+    clickNo = i;
+    var dg = win.eval("LETTER_DIGIT['" + letters.charAt(i) + "']");
+    win.eval("padPractice.btn(" + dg + ").click()");
+    perClick.push(SPOKEN.slice(before));
+  }
+  /* 故意**不**在这里重置 clickNo：整词朗读是异步的第二批，靠它才能归到最后一键；
+     同步快照（perClick）抓不到那一批。 */
+  var seen = SPOKEN.length;
+
+  /* 等整条发音链跑完（假 Audio 下每段约 200ms；最后一键的拼读 + 整词共约 4 段） */
+  await wait(3000);
+  perClick[letters.length - 1] = perClick[letters.length - 1].concat(SPOKEN.slice(seen));
+  clickNo = -1;
+
+  log('\n练习「' + hanzi + '」 letters=' + letters);
+  letters.split('').forEach(function (ch, i) {
+    var flat = [];
+    perClick[i].forEach(function (c) { flat = flat.concat(c.items); });
+    log('  点 ' + ch + ' → ' + (flat.length ? flat.join(' + ') : '（静音）'));
+  });
+
+  /* 先分出「整词朗读」那一批：它的音频序列恰好等于各音节的 hanAudio。
+     ⚠️ 这一批是本次改动的重点 —— 它以前是 TTS（'~'），现在是**录音串联**。
+     必须单独分出来统计，否则整词会把每个音节音多算一次。 */
+  function isWordCall(c) {
+    if (c.items.length !== info.length) return false;
+    return info.every(function (inf, i) {
+      return c.items[i].split('|')[0] === inf.hanAudio;
+    });
+  }
+  var wordCalls = [], wordAt = -1;
+  perClick.forEach(function (g, i) {
+    g.forEach(function (c) { if (isWordCall(c)) { wordCalls.push(c); wordAt = i; } });
+  });
+
+  /* 每个音各念几次：声母 1 次、韵母 1 次、音节 1 次（整词那批不计入） */
+  var expect = {};
+  info.forEach(function (inf) {
+    [inf.iniAudio, inf.finAudio, inf.hanAudio].forEach(function (a) {
+      if (a) expect[a] = (expect[a] || 0) + 1;
+    });
+  });
+  var got = {};
+  perClick.forEach(function (g) {
+    g.forEach(function (c) {
+      if (wordCalls.indexOf(c) !== -1) return;
+      c.items.forEach(function (s) {
+        var name = s.split('|')[0];
+        if (name === '~') return;
+        got[name] = (got[name] || 0) + 1;
+      });
+    });
+  });
+  Object.keys(expect).forEach(function (name) {
+    chk(got[name] === expect[name],
+        hanzi + ' 里 ' + name + ' 念了 ' + (got[name] || 0) + ' 次，应 ' + expect[name] + ' 次');
+  });
+  Object.keys(got).forEach(function (name) {
+    chk(expect[name] !== undefined, hanzi + ' 里出现了不该有的发音 ' + name);
+  });
+
+  /* 收尾的整词朗读：只在最后一键上发起一次，而且**必须全是录音**。
+     "全是录音"是本次改动的核心断言 —— 只要有一段落到 TTS（'~'），
+     手机上就是"拼完很久才出声"，打包成 app（Android WebView 没有 speechSynthesis）后彻底哑。 */
+  chk(wordCalls.length === 1, hanzi + ' 整词朗读发起了 ' + wordCalls.length + ' 次（应 1 次）');
+  chk(wordAt === letters.length - 1, hanzi + ' 整词朗读不在最后一键上（在第 ' + wordAt + ' 键）');
+  wordCalls.forEach(function (c) {
+    var tts = c.items.filter(function (s) { return s.split('|')[0] === '~'; });
+    chk(tts.length === 0,
+        hanzi + ' 整词朗读有 ' + tts.length + ' 段落到 TTS（应 0 段，须全走录音）: ' + c.items.join(','));
+  });
+
+  /* 位置：声母音只能在「声母最后一个字母」那一键上，前面的字母必须全静音 */
+  info.forEach(function (inf, si) {
+    var base = starts[si];
+    if (inf.iniLen > 1) {
+      perClick[base].forEach(function (c) {
+        chk(false, hanzi + ' 音节' + si + '：声母第一个字母（第 ' + base + ' 键）就发声了: ' + c.items.join(','));
+      });
+    }
+    var iniAt = perClick[base + inf.iniLen - 1] || [];
+    var iniHit = iniAt.filter(function (c) {
+      return c.items.some(function (s) { return s.split('|')[0] === inf.iniAudio; });
+    }).length;
+    chk(iniHit === 1, hanzi + ' 音节' + si + '：声母音不在第 ' + (base + inf.iniLen - 1) + ' 键上（命中 ' + iniHit + ' 次）');
+
+    if (inf.finLen) {
+      var finAt = perClick[base + inf.iniLen + inf.finLen - 1] || [];
+      var finHit = finAt.filter(function (c) {
+        return c.items.some(function (s) { return s.split('|')[0] === inf.finAudio; });
+      }).length;
+      chk(finHit === 1, hanzi + ' 音节' + si + '：韵母音不在第 ' + (base + inf.iniLen + inf.finLen - 1) + ' 键上（命中 ' + finHit + ' 次）');
+    }
+  });
+}
+</script>
+</body></html>

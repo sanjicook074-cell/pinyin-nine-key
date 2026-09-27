@@ -1,0 +1,34 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>列出应用用到的全部音频名</title></head>
+<body><pre id="out">running</pre>
+<iframe id="f" src="../pinyin-nine-key.html" style="width:400px;height:300px;border:0;position:absolute;left:-9999px"></iframe>
+<script>
+var OUT = document.getElementById('out');
+function done(s) { OUT.textContent = s; }
+var f = document.getElementById('f');
+f.onload = function () {
+  var win = f.contentWindow;
+  var r;
+  try {
+    r = win.eval(`(function () {
+      var ini = {}, fin = {}, han = {}, words = [];
+      WORDS.forEach(function (w) {
+        w.sylInfo.forEach(function (i) {
+          ini[i.iniAudio] = 1;
+          fin[i.finAudio] = 1;
+          han[i.hanAudio] = 1;
+          words.push(w.hanzi + '|' + i.iniAudio + '|' + i.finAudio + '|' + i.hanAudio);
+        });
+      });
+      return JSON.stringify({
+        ini: Object.keys(ini).sort(),
+        fin: Object.keys(fin).sort(),
+        han: Object.keys(han).sort(),
+        words: words,
+        bases: AUDIO_BASES,
+        override: AUDIO_OVERRIDE
+      });
+    })()`);
+  } catch (e) { done('EVAL ERROR: ' + e.message); return; }
+  done(r);
+};
+</script></body></html>

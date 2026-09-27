@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>pending</title>
+<style>body{margin:8px;background:#c9d4e4;font:13px/1.55 monospace}
+iframe{width:375px;height:700px;border:0;display:block;margin:0 auto;background:#fff}
+pre{background:#fff;padding:8px;white-space:pre-wrap}</style></head>
+<body>
+<iframe id="f" src="../pinyin-nine-key.html"></iframe>
+<pre id="out">pending</pre>
+<script>
+/* 断网验证：本页必须配 --host-resolver-rules="MAP * ~NOTFOUND" 跑，
+   让**所有**网络请求都失败。此时：
+     ① 每个音频的地址都必须是 blob:（内联数据转出来的本地地址）；
+     ② 系统语音（TTS）一次都不能被调用 —— 只要有一次，就说明有音频漏网了，
+        而 TTS 正是手机"很久才出声"、打包成 app 后"彻底哑"的那条路。 */
+var PLAYED = [], TTS = [], bad = [];
+var out = document.getElementById('out');
+function log(s) { out.textContent += '\n' + s; }
+function chk(c, m) { if (!c) bad.push(m); }
+
+function FakeAudio() {
+  var self = this;
+  this.src = ''; this.muted = false; this.playbackRate = 1; this.preload = '';
+  this.onended = null; this.onerror = null;
+  this.play = function () {
+    PLAYED.push(self.src);
+    setTimeout(function () { if (self.onended) self.onended(); }, 0);
+    return Promise.resolve();
+  };
+  this.pause = function () {};
+  this.load = function () {};
+  this.addEventListener = function () {};
+  this.removeEventListener = function () {};
+}
+function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+document.getElementById('f').onload = async function () {
+  var f = document.getElementById('f'), win = f.contentWindow, doc = f.contentDocument;
+  win.Audio = FakeAudio;
+
+  /* 只读属性，必须 defineProperty；直接赋值会静默失败，测试就会偷偷用真 TTS 跑完 */
+  Object.defineProperty(win, 'speechSynthesis', {
+    configurable: true,
+    get: function () {
+      return {
+        speak: function (u) { TTS.push((u && u.text) || ''); },
+        cancel: function () {}, pause: function () {}, resume: function () {},
+        getVoices: function () { return []; }, onvoiceschanged: null
+      };
+    }
+  });
+
+  /* 一、静态：86 个音频能不能全部在本地解析出来 */
+  var s = doc.createElement('script');
+  s.textContent = 'window.__OFL__ = (function(){try{' +
+    'var miss=[],nb=[];var ks=Object.keys(AUDIO_INLINE);' +
+    'ks.forEach(function(n){var u=localSrc(n);' +
+    'if(!u)miss.push(n);else if(u.indexOf("blob:")!==0)nb.push(n);});' +
+    'return {total:ks.length,missing:miss,notBlob:nb};}catch(e){return {err:String(e)}}})();';
+  doc.body.appendChild(s);
+  var st = win.__OFL__;
+  log('内联音频总数: ' + st.total);
+  chk(st.total > 0, 'AUDIO_INLINE 是空的');
+  chk(!st.missing || st.missing.length === 0, '解析不出本地地址: ' + (st.missing || []).join(','));
+  chk(!st.notBlob || st.notBlob.length === 0, '地址不是 blob: ' + (st.notBlob || []).join(','));
+
+  /* 二、逐个播一遍，确认每一个都真的从本地出去 */
+  win.eval('Object.keys(AUDIO_INLINE).forEach(function(n){ playClip(n, function(){}); })');
+  await wait(400);
+  var blobs = PLAYED.filter(function (u) { return u.indexOf('blob:') === 0; });
+  log('逐个播 ' + PLAYED.length + ' 个，其中 blob: ' + blobs.length);
+  chk(PLAYED.length === st.total, '播放了 ' + PLAYED.length + ' 个，应 ' + st.total);
+  chk(blobs.length === PLAYED.length,
+      '有 ' + (PLAYED.length - blobs.length) + ' 个走了网络地址: ' +
+      PLAYED.filter(function (u) { return u.indexOf('blob:') !== 0; }).slice(0, 5).join(' | '));
+
+  /* 三、端到端：练习页把「苹果」拼完，整词朗读必须也是本地录音 */
+  PLAYED = []; TTS = [];
+  win.eval("(function(){var i=-1;for(var k=0;k<WORDS.length;k++){if(WORDS[k].hanzi==='苹果')i=k;}"
+         + "practiceOrder=[i];practicePos=0;loadPractice();})()");
+  var letters = win.eval('pracWord.letters');
+  for (var i = 0; i < letters.length; i++) {
+    var dg = win.eval("LETTER_DIGIT['" + letters.charAt(i) + "']");
+    win.eval("padPractice.btn(" + dg + ").click()");
+  }
+  await wait(3000);
+  log('\n练习「苹果」拼完：');
+  log('  播放 ' + PLAYED.length + ' 次，其中 blob: ' +
+      PLAYED.filter(function (u) { return u.indexOf('blob:') === 0; }).length);
+  log('  系统语音被调用 ' + TTS.length + ' 次' + (TTS.length ? ': ' + TTS.join('/') : ''));
+  chk(PLAYED.length >= 6, '练习页播放次数太少: ' + PLAYED.length);
+  chk(PLAYED.every(function (u) { return u.indexOf('blob:') === 0; }), '练习页有音频走了网络');
+  chk(TTS.length === 0, '练习页调用了系统语音 ' + TTS.length + ' 次（应 0）—— 有音频漏网');
+
+  log('\n' + (bad.length ? '❌ FAIL\n' + bad.join('\n') : '✅ PASS —— 断网下全部走本地，零 TTS'));
+  document.title = bad.length ? 'FAIL:' + bad.length : 'PASS';
+};
+</script>
+</body></html>

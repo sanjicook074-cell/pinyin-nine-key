@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>letter</title>
+<style>body{margin:0;font:11px monospace}iframe{border:0;display:block}</style>
+</head><body>
+<iframe id="f" src="../pinyin-nine-key.html" width="375" height="900"></iframe>
+<pre id="out">pending</pre>
+<script>
+var LINES = [], bad = [], win, d, P = {};
+/* 每写一行就立刻刷到页面上 —— 否则中途在异步回调里抛异常时，
+   页面会一直停在 "pending"，看着像"脚本根本没跑"（这种假死分辨不出来） */
+function paint() {
+  document.getElementById('out').textContent =
+    LINES.join('\n') + '\n\n' + (bad.length ? '❌ FAIL\n' + bad.join('\n') : '（跑到这里）');
+}
+function log(s) { LINES.push(s); paint(); }
+function chk(ok, msg) { if (!ok) { bad.push(msg); paint(); } }
+function flush() {
+  document.getElementById('out').textContent =
+    LINES.join('\n') + '\n\n' + (bad.length ? '❌ FAIL\n' + bad.join('\n') : '✅ PASS');
+}
+
+var BLUE = 'rgb(59, 130, 246)';      // #3b82f6 字母亮
+var GREEN = 'rgb(16, 185, 129)';     // #10b981
+var RED = 'rgb(239, 68, 68)';        // #ef4444
+var KEY_ACTIVE = 'rgb(234, 241, 255)';   // #eaf1ff 键只收淡底
+var KEY_OK = 'rgb(232, 248, 241)';       // #e8f8f1
+var KEY_BAD = 'rgb(253, 236, 236)';      // #fdecec
+var UNSET = 'rgba(0, 0, 0, 0)';
+
+var LAY = [1, 2, 3, 4, 5, 6, 7, 8, 9, '*', 0, '#'];
+function keyIn(padId, dig) { return d.querySelectorAll('#' + padId + ' .k')[LAY.indexOf(Number(dig))]; }
+function cs(el, p) { return win.getComputedStyle(el)[p]; }
+function lit(padId, dig, cls) {
+  var b = keyIn(padId, dig);
+  if (!b) return ['<没有这个键>'];
+  return Array.prototype.filter.call(b.querySelectorAll('.kch'), function (x) {
+    return x.classList.contains(cls);
+  }).map(function (x) { return x.dataset.ch; });
+}
+function keyCls(padId, dig, cls) { return keyIn(padId, dig).classList.contains(cls); }
+function letterEl(padId, dig, ch) {
+  var b = keyIn(padId, dig);
+  return Array.prototype.filter.call(b.querySelectorAll('.kch'), function (x) {
+    return x.dataset.ch === String(ch).toUpperCase();
+  })[0];
+}
+function digOf(ch) { return win.eval('LETTER_DIGIT')['' + ch + '']; }
+
+var STEPS = [];
+function run(i) {
+  if (i >= STEPS.length) { flush(); return; }
+  try {
+    STEPS[i](function () { setTimeout(function () { run(i + 1); }, 0); });
+  } catch (e) {
+    bad.push('第 ' + (i + 1) + ' 步抛异常: ' + e.message);
+    flush();
+  }
+}
+
+document.getElementById('f').addEventListener('load', function () {
+  log('· load 触发');
+  try {
+  win = document.getElementById('f').contentWindow;
+  d = document.getElementById('f').contentDocument;
+  log('· 拿到 iframe 窗口');
+
+  /* headless + virtual time 不推进 CSS transition，
+     读 computed 会拿到过渡起始色 —— 先全部关掉 */
+  var kill = d.createElement('style');
+  kill.textContent = '*{transition:none !important;animation:none !important}';
+  d.head.appendChild(kill);
+
+  /* 假 Audio：不联网，play() 立刻排一个 onended，让拼读链能同步般跑完 */
+  win.eval([
+    '(function () {',
+    '  window.Audio = function () {',
+    '    return { muted: false, playbackRate: 1, preload: "", src: "", paused: true,',
+    '             onended: null, onerror: null,',
+    '             play: function () { var s = this; setTimeout(function () { if (s.onended) s.onended(); }, 300); return Promise.resolve(); },',
+    '             pause: function () {}, load: function () {} };',
+    '  };',
+    '})();'
+  ].join('\n'));
+
+  ['padBasic', 'padDemo', 'padFind', 'padRead', 'padPractice'].forEach(function (n) {
+    P[n] = win.eval(n);
+  });
+  var buildDemoSteps = win.eval('buildDemoSteps');
+  var WORDS = win.eval('WORDS');
+
+  /* ---------- 1) 结构：每个字母都带 data-ch；键上字母数对得上 ---------- */
+  STEPS.push(function (next) {
+    var missing = [], wrong = [];
+    ['padBasic', 'padDemo', 'padFind', 'padRead', 'padPractice'].forEach(function (padId) {
+      Array.prototype.forEach.call(d.querySelectorAll('#' + padId + ' .k'), function (b) {
+        var lets = b.querySelectorAll('.kch');
+        if (!lets.length) return;                       // 空格/符号/# 没有字母
+        var dig = LAY[Array.prototype.indexOf.call(b.parentNode.children, b)];
+        var want = (win.eval('KEY_LETTERS')['' + dig] || '').toUpperCase();
+        var got = Array.prototype.map.call(lets, function (x) { return x.dataset.ch || ''; }).join('');
+        if (got !== want) wrong.push(padId + ' 键 ' + dig + ' 字母=' + got + ' 期望=' + want);
+        Array.prototype.forEach.call(lets, function (x) {
+          if (!/^[A-Z]$/.test(x.dataset.ch || '')) missing.push(padId + ' 键 ' + dig + ' 缺 data-ch');
+        });
+      });
+    });
+    chk(!missing.length, '有字母没写 data-ch：' + missing.slice(0, 3).join('；'));
+    chk(!wrong.length, '键面字母对不上：' + wrong.slice(0, 3).join('；'));
+    log('① 结构：5 个键盘的字母都带 data-ch，字母序列与 KEY_LETTERS 一致');
+    next();
+  });
+
+  /* ---------- 2) 组件层：pulse / flash 只点亮指定字母 ---------- */
+  STEPS.push(function (next) {
+    /* 2a 指定字母 → 只有那个字母亮，键只收淡底 */
+    P.padDemo.clearActive();
+    P.padDemo.pulse(2, 340, 'B');
+    var kbg = cs(keyIn('padDemo', 2), 'backgroundColor');
+    var bbg = cs(letterEl('padDemo', 2, 'B'), 'backgroundColor');
+    var abg = cs(letterEl('padDemo', 2, 'A'), 'backgroundColor');
+    var cbg = cs(letterEl('padDemo', 2, 'C'), 'backgroundColor');
+    var bfg = cs(letterEl('padDemo', 2, 'B'), 'color');
+    chk(lit('padDemo', 2, 'is-active').join('') === 'B',
+        'pulse(2,_,\'B\') 后亮的字母是 ' + lit('padDemo', 2, 'is-active').join('') + '，应只有 B');
+    chk(bbg === BLUE, '亮着的字母底色 = ' + bbg + '，应为 ' + BLUE);
+    chk(bfg === 'rgb(255, 255, 255)', '亮着的字母字色 = ' + bfg + '，应为白色');
+    chk(abg === UNSET && cbg === UNSET, '同一个键上没被点到的字母不该有底色：A=' + abg + ' C=' + cbg);
+    chk(kbg === KEY_ACTIVE, '键本体底色 = ' + kbg + '，应为淡蓝 ' + KEY_ACTIVE + '（不该是实心蓝）');
+    chk(kbg !== BLUE, '键本体还是被整块染蓝了');
+    log('② pulse(2,_,\'B\') → 只有字母 B 亮（键只是淡蓝底，A/C 完全没动）');
+
+    setTimeout(function () {
+      /* 2b 同一个键换成另一个字母 —— 爸爸 b-a-b-a 全靠这个 */
+      P.padDemo.pulse(2, 340, 'a');
+      var litNow = lit('padDemo', 2, 'is-active').join('');
+      chk(litNow === 'A', 'pulse(2,_,\'a\') 后亮的是 ' + litNow + '，应只有 A');
+      log('   pulse(2,_,\'a\') → 换成字母 A 亮（B 已灭）');
+
+      setTimeout(function () {
+        /* 2c 按对：只绿那一个字母 */
+        P.padDemo.clearActive();
+        P.padDemo.flash(2, 'is-ok', 420, 'c');
+        var g = lit('padDemo', 2, 'is-ok').join('');
+        chk(g === 'C', 'flash(is-ok, ch=\'c\') 绿的字母 = ' + g + '，应只有 C');
+        chk(cs(letterEl('padDemo', 2, 'C'), 'backgroundColor') === GREEN, '绿色字母底色不对');
+        chk(cs(keyIn('padDemo', 2), 'backgroundColor') === KEY_OK, '键本体该是淡绿');
+
+        /* 2d 按错：不给 ch → 整键的字母一起红（按错的是"键"，不是某个字母） */
+        P.padDemo.flash(2, 'is-bad', 480);
+        var r = lit('padDemo', 2, 'is-bad').sort().join('');
+        chk(r === 'ABC', '按键错时变红的字母 = ' + r + '，应整键 ABC');
+        chk(cs(keyIn('padDemo', 2), 'backgroundColor') === KEY_BAD, '键本体该是淡红');
+        log('② 按对只绿「C」一个字母；按错整键 ABC 一起红（键本体只给淡底）');
+
+        setTimeout(function () {
+          /* 2e 死键（空格/符号/#）没有字母，状态落在它自己的灰字上 */
+          P.padDemo.clearActive();
+          P.padDemo.flash(0, 'is-bad', 480);
+          var muted = keyIn('padDemo', 0).querySelector('.k-let.muted');
+          chk(cs(keyIn('padDemo', 0), 'backgroundColor') === KEY_BAD, '死键底色该是淡红');
+          chk(cs(muted, 'color') === 'rgb(220, 38, 38)',
+              '死键文字该变红，实际 ' + cs(muted, 'color'));
+          P.padDemo.clearActive();
+          log('   死键（空格）没有字母可亮，状态落在它的灰字上 → 变红');
+          next();
+        }, 600);
+      }, 500);
+    }, 500);
+  });
+
+  /* ---------- 3) 示范页：steps 里带上是哪个字母 ---------- */
+  STEPS.push(function (next) {
+    var st = buildDemoSteps(WORDS[2]);            // WORDS[2] = 爸爸
+    chk(WORDS[2].hanzi === '爸爸', 'WORDS[2] 不是爸爸，测试前提变了');
+    var letters = st.filter(function (s) { return s.part !== 'syl'; });
+    var syl = st.filter(function (s) { return s.part === 'syl'; });
+    var seq = letters.map(function (s) { return s.ch; }).join('');
+    var keys = letters.map(function (s) { return s.key; }).join(',');
+    chk(seq === 'baba', '爸爸的字母步 = ' + seq + '，应为 baba');
+    chk(keys === '2,2,2,2', '爸爸的键 = ' + keys + '，应全是 2 键');
+    chk(syl.length === 2, '收尾步数 = ' + syl.length + '，应为 2');
+    chk(syl.every(function (s) { return s.key === undefined && s.ch === undefined; }),
+        '收尾步不该带 key/ch（它不闪键）');
+    chk(letters.every(function (s) { return s.ch && digOf(s.ch) === s.key; }),
+        '每一步的 ch 与 key 对不上');
+    log('③ 示范步骤：爸爸 → ' + seq + '，四步全在 2 键上但 ch 分别是 b/a/b/a；收尾步不闪键');
+    next();
+  });
+
+  /* ---------- 4) 示范页实跑：采样看亮的是不是 B→A→B→A ---------- */
+  STEPS.push(function (next) {
+    win.eval("demoWord = WORDS[2]; demoRate = 1; demoIndex = 2; renderDemoWord();");
+    /* 词设好了，但还得真的开播 —— 上一步漏了 playDemo()，
+       采样全程什么都没亮，报了个"序列为空"的假红 */
+    d.querySelector('.tab[data-page="demo"]').click();
+    win.eval('demoPlaying = false; playDemo();');
+    var seq = [], last = null, ticks = 0;
+    function sample() {
+      var cur = lit('padDemo', 2, 'is-active').join('');
+      if (cur !== last) { if (cur) seq.push(cur); last = cur; }
+    }
+    (function tick() {
+      sample();
+      ticks++;
+      if (ticks > 220) {
+        var s = seq.join('-');
+        chk(s === 'B-A-B-A', '示范实跑时 2 键上亮起的字母序列 = ' + s + '，应为 B-A-B-A');
+        chk(seq.length === 4, '示范实跑亮起次数 = ' + seq.length + '，应为 4 次');
+        log('④ 示范实跑采样：2 键上依次亮起 ' + s + '（不再整键长亮）');
+        next();
+        return;
+      }
+      setTimeout(tick, 40);
+    })();
+  });
+
+  /* ---------- 5) 练习页：连按同一个键，绿的是当前那个字母 ---------- */
+  STEPS.push(function (next) {
+    d.querySelector('.tab[data-page="practice"]').click();
+    win.eval("pracWord = WORDS[2]; pracIdx = 0; pracWrong = 0; pracClicks = 0; pracDone = false; renderPractice(); markCurrent();");
+    var letters = win.eval('pracWord.letters');
+    chk(letters === 'baba', '练习页强制词不是爸爸：' + letters);
+    var seen = [], i = 0;
+    function press() {
+      if (i >= 4) {
+        chk(win.eval('pracIdx') === 4, '四次按完 pracIdx = ' + win.eval('pracIdx') + '，应为 4');
+        log('⑤ 练习页逐次按 2 键 → 依次变绿的是 ' + seen.join('-') + '（每次都只有 1 个字母绿）');
+        next();
+        return;
+      }
+      var ch = letters.charAt(i);
+      var b = keyIn('padPractice', digOf(ch));
+      b.click();
+      var g = lit('padPractice', digOf(ch), 'is-ok');
+      seen.push(g.join(''));
+      chk(g.length === 1 && g[0] === ch.toUpperCase(),
+          '第 ' + (i + 1) + ' 次按完绿的字母 = ' + g.join('') + '，应只有 ' + ch.toUpperCase());
+      if (g[0] !== ch.toUpperCase()) return;          // 已经出错了，别再往下点
+      i++;
+      setTimeout(press, 500);
+    }
+    press();
+  });
+
+  /* ---------- 6) 跟读页：呼吸提示落在具体字母上 ---------- */
+  STEPS.push(function (next) {
+    win.eval("readQueue = ['ong']; readUnit = 'ong'; readPos = 0; readOver = false; readClean = true; readSpoken = true; paintRead();");
+    var need = win.eval('readUnit.charAt(readPos)');
+    var dig = digOf(need);
+    var hinted = lit('padRead', dig, 'is-hint').join('');
+    var active = lit('padRead', dig, 'is-active').join('');
+    chk(need === 'o', 'readUnit 前提变了: ' + win.eval('readUnit'));
+    chk(hinted === 'O', 'ong 第一字母的呼吸提示 = ' + hinted + '，应只有 O');
+    chk(active === 'O', 'ong 第一字母的蓝底 = ' + active + '，应只有 O');
+    chk(!keyCls('padRead', dig, 'is-hint'), '键本体不该在闪（会盖掉字母）');
+    log('⑥ 跟读页：ong 的 O/N/G 都在 ' + dig + ' 键，提示只落在字母 ' + active + ' 上');
+    next();
+  });
+
+  /* ---------- 7) 找键页：按对 → 只绿该字母 ---------- */
+  STEPS.push(function (next) {
+    d.querySelector('.tab[data-page="find"]').click();
+    var unit = win.eval('findUnit'), pos = win.eval('findPos');
+    var need = unit.charAt(pos), dig = digOf(need);
+    chk(need !== undefined, '拿不到找键页当前该按的字母');
+    keyIn('padFind', dig).click();
+    var g = lit('padFind', dig, 'is-ok');
+    chk(g.length === 1 && g[0] === need.toUpperCase(),
+        '找键页按对后绿的字母 = ' + g.join('') + '，应只有 ' + need.toUpperCase());
+    log('⑦ 找键页：题 ' + unit + ' 第 ' + pos + ' 个字母 ' + need + ' → 只绿 ' + g.join('') + '（键 ' + dig + ' 上其它字母不动）');
+    next();
+  });
+
+  /* ---------- 8) 基础页：点单个字母 → 只亮它 ---------- */
+  STEPS.push(function (next) {
+    d.querySelector('.tab[data-page="basic"]').click();
+    var el = letterEl('padBasic', 2, 'B');
+    chk(!!el, '基础页找不到字母 B');
+    el.click();
+    var a = lit('padBasic', 2, 'is-active').join('');
+    chk(a === 'B', '点单个字母后亮的是 ' + a + '，应只有 B');
+    log('⑧ 基础页：点字母 B → 只亮 B（不再整键一起亮）');
+    setTimeout(function () {
+      var after = lit('padBasic', 2, 'is-active').join('');
+      chk(after === '', '基础页字母高亮该自己灭掉，实际还亮着 ' + after);
+      next();
+    }, 800);
+  });
+
+  log('· 全部阶段已登记，开始跑');
+  setTimeout(function () { run(0); }, 300);
+  } catch (e) {
+    bad.push('load 阶段抛异常: ' + e.message + ' / ' + (e.stack || '').split('\n')[1]);
+    flush();
+  }
+});
+</script>
+</body></html>

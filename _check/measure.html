@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>measure</title>
+<style>body{margin:0;font:11px monospace}iframe{border:0;display:block}</style>
+</head><body>
+<iframe id="f" src="../pinyin-nine-key.html"></iframe>
+<pre id="out">pending</pre>
+<script>
+var W = parseInt((location.hash || '#375').slice(1), 10) || 375;
+var f = document.getElementById('f');
+f.width = W; f.height = 900;
+
+f.addEventListener('load', function () {
+  var d = f.contentDocument, win = f.contentWindow;
+  var pad = d.querySelector('#padBasic');
+  var padW = Math.round(pad.getBoundingClientRect().width);
+  var colMap = {}, keyInfo = [], problems = [], fs = null, fs2 = null;
+
+  Array.prototype.forEach.call(pad.querySelectorAll('.k'), function (b) {
+    var L = b.querySelector('.k-let');
+    if (!L) return;
+    if (!fs) fs = win.getComputedStyle(L).fontSize;
+    var ch = L.querySelector('.kch');
+    if (ch) fs2 = win.getComputedStyle(ch).fontSize;
+    var kids = Array.prototype.map.call(L.querySelectorAll('.kch'), function (e) {
+      return e.textContent;
+    }).join('');
+    var inner = b.clientWidth - 6;                 // .k padding: 6px 3px
+    var need = L.scrollWidth;
+    if (kids) colMap[Math.round(b.getBoundingClientRect().left)] = b.clientWidth;
+    keyInfo.push(kids + '[' + need + '/' + inner + ']');
+    if (need > inner) problems.push('OVERFLOW ' + kids + ' need ' + need + ' > ' + inner);
+  });
+
+  var colW = Object.keys(colMap).map(function (k) { return colMap[k]; }).sort(function (a, b) { return a - b; });
+  document.getElementById('out').textContent = JSON.stringify({
+    vw: W, padW: padW, letterFont: fs2 || fs, mutedFont: fs, colW: colW,
+    even: colW.length ? colW[0] === colW[colW.length - 1] : null,
+    problems: problems, keys: keyInfo.join(' ')
+  });
+  document.title = 'done';
+});
+</script>
+</body></html>

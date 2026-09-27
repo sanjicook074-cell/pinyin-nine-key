@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>音源全失败时的降级路径</title>
+<style>body{margin:8px;background:#c9d4e4;font:13px/1.5 monospace}
+iframe{width:375px;height:640px;border:0;display:block;margin:0 auto;background:#fff}
+pre{background:#fff;padding:8px;white-space:pre-wrap}</style></head>
+<body>
+<iframe id="f" src="../pinyin-nine-key.html"></iframe>
+<pre id="out">running…</pre>
+<script>
+/* 用**假的** Audio 让每个音源都加载失败（play → onerror），验降级链：
+   ① 两个源都失败 → ② 记 audioBad 不再重试 → ③ 降级到系统语音 → ④ 流程不卡死。
+   不用真网络：真网络在 headless 里失败时机不可控，测的就不是这段逻辑了。 */
+var OUT = document.getElementById('out');
+var LINES = [], bad = [], LOG = { plays: [], tts: [], ttsProp: '' }, win = null, d = null;
+
+function log(s) { LINES.push(s); OUT.textContent = LINES.join('\n'); }
+function chk(c, m) { if (!c) bad.push(m); }
+function short(u) { return String(u).split('/').pop(); }
+function stage(n, fn) { try { fn(); } catch (e) { bad.push('[' + n + '] ' + e.message); log('❌ ' + n + ': ' + e.message); } }
+var LAYOUT = [1, 2, 3, 4, 5, 6, 7, 8, 9, '*', 0, '#'];
+
+document.getElementById('f').onload = function () {
+  win = document.getElementById('f').contentWindow;
+  d = document.getElementById('f').contentDocument;
+
+  stage('inject', function () {
+    /* 假 Audio：每次 play 都异步触发 onerror，模拟“这个音源取不到” */
+    win.Audio = function () {
+      var self = this;
+      this.playbackRate = 1; this.preload = ''; this._src = '';
+      this.onended = null; this.onerror = null;
+      Object.defineProperty(this, 'src', { get: function () { return self._src; }, set: function (v) { self._src = v; } });
+      this.load = function () {};
+      this.pause = function () {};
+      this.play = function () {
+        LOG.plays.push(short(self._src));
+        return Promise.resolve().then(function () { if (self.onerror) self.onerror(); });
+      };
+    };
+
+    /* speechSynthesis 在 Window 上是只读的，直接赋值会静默失败 —— 必须 defineProperty */
+    var fake = {
+      speak: function (u) { LOG.tts.push(String(u.text)); if (u.onend) u.onend(); },
+      cancel: function () {},
+      getVoices: function () { return [{ name: 'fake-zh', lang: 'zh-CN' }]; }
+    };
+    try {
+      Object.defineProperty(win, 'speechSynthesis', { value: fake, configurable: true, writable: true });
+    } catch (e) { LOG.ttsProp = 'defineProperty 失败: ' + e.message; }
+    LOG.ttsProp = LOG.ttsProp || String(win.speechSynthesis === fake);
+    win.SpeechSynthesisUtterance = function (t) { this.text = t; this.lang = ''; this.rate = 1; this.onend = null; this.onerror = null; };
+  });
+
+  var want = '', dig = '';
+  stage('start', function () {
+    d.querySelector('.tab[data-page="practice"]').click();
+    dig = win.eval('LETTER_DIGIT[pracWord.letters[0]]');
+    want = win.eval('pracWord.sylInfo[0].iniAudio');
+    log('词 = ' + win.eval('pracWord.hanzi') + '，第一个字母该按 ' + dig + ' 键，声母音 = ' + want);
+    log('假 TTS 是否装上了: ' + LOG.ttsProp);
+    d.getElementById('padPractice').querySelectorAll('button.k')[LAYOUT.indexOf(Number(dig))].click();
+  });
+
+  setTimeout(function () {
+    var audioBad = {};
+    try { audioBad = JSON.parse(win.eval('JSON.stringify(audioBad)')); } catch (e) { bad.push('读 audioBad 失败: ' + e.message); }
+    log('');
+    log('尝试过的音源: ' + LOG.plays.join(' '));
+    log('audioBad     : ' + (Object.keys(audioBad).length ? Object.keys(audioBad).join(' ') : '（空）'));
+    log('降级到的 TTS : ' + (LOG.tts.length ? LOG.tts.join(' / ') : '（无）'));
+    chk(LOG.plays.length >= 2, '两个音源都应该被试过，实际只试了 ' + LOG.plays.length + ' 次');
+    chk(Object.keys(audioBad).indexOf(want) !== -1, '两个源都取不到，却没把 ' + want + ' 记进 audioBad');
+    chk(LOG.tts.length > 0, '音源失败后没有降级到系统语音');
+    log('');
+    log(bad.length ? '❌ FAIL\n' + bad.join('\n') : '✅ PASS —— 两个音源都取不到时，正确降级到系统语音');
+  }, 8000);
+};
+</script></body></html>

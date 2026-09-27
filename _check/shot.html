@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>shot</title>
+<style>body{margin:0;background:#c9d4e4}iframe{border:0;display:block;position:absolute;left:0;top:0}</style>
+</head><body>
+<iframe id="f" src="../pinyin-nine-key.html" width="375" height="880"></iframe>
+<script>
+/* 截图辅助：#<mode>
+   basic / read / find / demo / practice —— 切到那一页
+   lit   示范页停在「字母 A 亮着」（你好 → ao 在 2/6 两个键上）
+   ok    练习页停在「字母 B 变绿」（爸爸，只绿 B 不绿 A/C）
+   bad   练习页停在「按错，整键 ABC 变红」
+   hint  跟读页停在「字母 O 在呼吸」（ong 三个字母都在 6 键）        */
+var mode = (location.hash || '#basic').slice(1);
+document.getElementById('f').addEventListener('load', function () {
+  var d = document.getElementById('f').contentDocument;
+  var win = document.getElementById('f').contentWindow;
+  function tab(name) { d.querySelector('.tab[data-page="' + name + '"]').click(); }
+
+  if (mode === 'lit') {
+    tab('demo');
+    win.eval("demoWord = WORDS[0]; renderDemoWord();");      // 你好
+    win.eval("padDemo.clearActive(); padDemo.pulse(2, 60000, 'A');");   // 只亮 A
+  } else if (mode === 'ok') {
+    tab('practice');
+    win.eval("pracWord = WORDS[2]; pracIdx = 0; pracWrong = 0; pracClicks = 0; pracDone = false; renderPractice(); markCurrent();");
+    win.eval("padPractice.clearActive(); padPractice.flash(2, 'is-ok', 60000, 'b');");
+  } else if (mode === 'bad') {
+    tab('practice');
+    win.eval("pracWord = WORDS[2]; pracIdx = 0; pracWrong = 0; pracClicks = 0; pracDone = false; renderPractice(); markCurrent();");
+    win.eval("padPractice.clearActive(); padPractice.flash(3, 'is-bad', 60000);");
+  } else if (mode === 'hint') {
+    tab('read');
+    win.eval("readQueue = []; readUnit = 'ong'; readPos = 0; readOver = false; readClean = true; readSpoken = true; paintRead();");
+  } else if (['read', 'find', 'demo', 'practice', 'basic'].indexOf(mode) !== -1) {
+    tab(mode);
+  }
+  document.title = 'ready';
+});
+</script>
+</body></html>

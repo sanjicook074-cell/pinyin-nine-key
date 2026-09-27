@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>示范页·移动端自动播放策略复现</title>
+<style>body{margin:8px;background:#c9d4e4;font:13px/1.5 monospace}
+iframe{width:375px;height:640px;border:0;display:block;margin:0 auto;background:#fff}
+pre{background:#fff;padding:8px;white-space:pre-wrap}</style></head>
+<body>
+<iframe id="f" src="../pinyin-nine-key.html"></iframe>
+<pre id="out">running…</pre>
+<script>
+var OUT = document.getElementById('out');
+var LINES = [], bad = [], win = null, d = null, t = 0, err = null;
+var LOG = { plays: [], rejects: [] };
+
+function log(s) { LINES.push(s); OUT.textContent = LINES.join('\n'); }
+function chk(c, m) { if (!c) bad.push(m); }
+function short(u) { return String(u).split('/').pop(); }
+function stage(n, fn) { try { fn(); } catch (e) { bad.push('[' + n + '] ' + e.message); log('❌ ' + n + ' 抛异常: ' + e.message); } }
+
+var f = document.getElementById('f');
+f.onload = function () { run(); };
+
+function run() {
+  stage('inject', function () {
+    win = f.contentWindow; d = f.contentDocument;
+    win.__gesture = false;
+
+    /* 同 autoplay.html：模拟移动端的「元素级解锁 + 必须用户手势」 */
+    win.Audio = function () {
+      var self = this;
+      this.playbackRate = 1; this.preload = ''; this._src = ''; this._unlocked = false;
+      this.onended = null; this.onerror = null;
+      Object.defineProperty(this, 'src', { get: function () { return self._src; }, set: function (v) { self._src = v; } });
+      this.load = function () {};
+      this.pause = function () { self._paused = true; };
+      this.play = function () {
+        self._paused = false;
+        if (!self._unlocked && !win.__gesture) {
+          LOG.rejects.push(short(self._src));
+          var e = new Error("play() failed because the user didn't interact with the document first");
+          e.name = 'NotAllowedError';
+          return Promise.reject(e);
+        }
+        self._unlocked = true;
+        LOG.plays.push(short(self._src));
+        return Promise.resolve().then(function () { if (!self._paused && self.onended) self.onended(); });
+      };
+    };
+    win.speechSynthesis = { speak: function (u) { setTimeout(function () { if (u.onend) u.onend(); }, 10); }, cancel: function () {}, getVoices: function () { return [{ name: 'fake-zh', lang: 'zh-CN' }]; } };
+    win.SpeechSynthesisUtterance = function (t) { this.text = t; this.lang = ''; this.rate = 1; this.onend = null; this.onerror = null; };
+  });
+
+  function tap(el) {
+    win.__gesture = true;
+    try { el.click(); } finally { win.__gesture = false; }
+  }
+
+  var word = '';
+  stage('start', function () {
+    tap(d.querySelector('.tab[data-page="demo"]'));
+    word = win.eval('demoWord.hanzi');
+    log('词 = ' + word + '（' + win.eval('demoWord.pinyin') + '）  段落数=' + win.eval('demoWord.sylInfo.length'));
+    tap(d.getElementById('demoPlay'));
+  });
+
+  /* 等示范播完（demoPlaying 回落），再断言 */
+  (function tick() {
+    if (t > 30000) { bad.push('示范 30s 没播完（cond 异常: ' + err + '）'); finish(); return; }
+    var playing = null;
+    try { playing = win.eval('demoPlaying'); } catch (e) { err = e.message; }
+    if (playing === false) { finish(); return; }
+    t += 200;
+    setTimeout(tick, 200);
+  })();
+
+  function finish() {
+    var audioBad = {};
+    try { audioBad = JSON.parse(win.eval('JSON.stringify(audioBad)')); } catch (e) {}
+    log('');
+    log('成功播放（按顺序）: ' + (LOG.plays.length ? LOG.plays.join(' ') : '（无）'));
+    log('被策略拒绝        : ' + (LOG.rejects.length ? LOG.rejects.join(' ') : '（无）'));
+    log('被永久拉黑的音频  : ' + (Object.keys(audioBad).length ? Object.keys(audioBad).join(' ') : '（无）'));
+    chk(LOG.plays.length >= 3, '示范里成功播放的音频太少（' + LOG.plays.length + '），测试可能没跑起来');
+    chk(LOG.rejects.length === 0, '有 ' + LOG.rejects.length + ' 次播放被自动播放策略拒绝: ' + LOG.rejects.join(' '));
+    chk(Object.keys(audioBad).length === 0, '有音频被误判为“源坏了”永久拉黑: ' + Object.keys(audioBad).join(' '));
+    log('');
+    log(bad.length ? '❌ FAIL\n' + bad.join('\n') : '✅ PASS —— 示范每一步都播成功了');
+  }
+}
+</script></body></html>
