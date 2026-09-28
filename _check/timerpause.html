@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>timerpause</title>
+<style>body{margin:0}iframe{border:0;position:absolute;left:0;top:0;width:375px;height:900px;visibility:hidden}
+pre{position:relative;z-index:9;font:12px/1.5 monospace}</style>
+</head><body>
+<pre id="out">pending</pre>
+<iframe id="f" src="../pinyin-nine-key.html"></iframe>
+<script>
+/* 验 README 里那两条**承诺**（不是"代码里有"，而是"真触发时确实这样"）：
+     ① 「切走、或者切到别的 App 就停表」—— 切到别的 App 用 visibilitychange 模拟
+     ② 关页面时把最后一段时长也存下来 —— 用 pagehide 模拟
+   ------------------------------------------------------------------
+   为什么用派发事件而不是真去切 App：无头浏览器里没法真的切走。
+   把 iframe 的 document.hidden 覆写成可控值 + 派发 visibilitychange，
+   就能走到程序里那条分支（程序读的正是 document.hidden）。
+
+   关键判据是**存档值不再增长**（store 冻结），而不是屏幕上的数字——
+   屏幕按秒取整，冻结时本来就可能一两秒看不出变化。
+
+   用法：python _check/run_check.py timerpause.html   （需要 ≥7000ms 虚拟时间，
+   这个页面自己会跑 5.8 秒，比 run_check 默认的 4000 长） */
+var problems = [], log = [];
+function ok(c, m) { if (!c) problems.push(m); }
+function finish() {
+  document.getElementById('out').textContent =
+    JSON.stringify({ ok: problems.length === 0, problems: problems, log: log }, null, 1);
+  document.title = problems.length ? 'FAIL' : 'PASS';
+}
+function secs(txt) {
+  var m = /(\d+):(\d\d)(?::(\d\d))?$/.exec(txt || '');
+  if (!m) return null;
+  return m[3] ? (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) : (+m[1]) * 60 + (+m[2]);
+}
+
+var f = document.getElementById('f');
+f.addEventListener('load', function () {
+  var w = f.contentWindow, d = f.contentDocument;
+  var KEY = 'ninekey-page-seconds';
+  var hidden = false;
+  /* 覆写 document.hidden：程序读的就是这个属性 */
+  Object.defineProperty(d, 'hidden', { get: function () { return hidden; }, configurable: true });
+  function fire() { d.dispatchEvent(new Event('visibilitychange')); }
+  function shown() { return d.getElementById('pageTimer').textContent; }
+  function store() {
+    try { return JSON.parse(w.localStorage.getItem(KEY)) || {}; } catch (e) { return null; }
+  }
+  function basic() { return ((store() || {}).basic) || 0; }
+
+  var A, S1, B, S2, C, S3;
+  setTimeout(function () {                       // ① 先在基础页待一会儿
+    A = secs(shown());
+    ok(A !== null && A >= 1, '基础页停 1.4 秒了，显示还不到 1 秒：' + shown());
+
+    hidden = true; fire();                        // ② 模拟"切到别的 App"
+    S1 = basic();
+    ok(S1 >= 1, '切走时没有把已练时长落盘：' + JSON.stringify(store()));
+    log.push('t1 切走（hidden=true）显示 ' + shown() + '，存档 basic=' + S1.toFixed(2));
+
+    setTimeout(function () {                      // ③ 在"别的 App"里待 2.2 秒
+      S2 = basic();
+      B = secs(shown());
+      ok(Math.abs(S2 - S1) < 0.05,
+         '切走以后还在计：basic 从 ' + S1.toFixed(2) + ' 涨到 ' + S2.toFixed(2));
+      ok(B <= A, '切走以后屏幕上的数字还在涨：' + A + ' → ' + B);
+      log.push('t2 停表 2.2 秒后 显示 ' + shown() + '，存档 basic=' + S2.toFixed(2) + '（应等于 ' + S1.toFixed(2) + '）');
+
+      hidden = false; fire();                     // ④ 回到页面
+      setTimeout(function () {                    // ⑤ 再待 2.2 秒
+        C = secs(shown());
+        ok(C > B, '回到页面后没有继续计时：' + B + ' → ' + C);
+        log.push('t3 回来 2.2 秒后 显示 ' + shown() + '（停表前是 ' + B + '）');
+
+        w.dispatchEvent(new Event('pagehide'));   // ⑥ 模拟关页面
+        S3 = basic();
+        ok(S3 > S2 + 1, '关页面时最后一段没存下来：basic 从 ' + S2.toFixed(2) + ' 到 ' + S3.toFixed(2));
+        log.push('t4 pagehide 后 存档 basic=' + S3.toFixed(2) + '（应比 ' + S2.toFixed(2) + ' 大约 2.2）');
+        finish();
+      }, 2200);
+    }, 2200);
+  }, 1400);
+});
+</script>
+</body></html>
