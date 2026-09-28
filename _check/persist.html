@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>persist</title>
+<style>body{margin:0}iframe{border:0;position:absolute;left:0;top:0;width:375px;height:900px;visibility:hidden}
+pre{position:relative;z-index:9;font:12px/1.5 monospace}</style>
+</head><body>
+<pre id="out">pending</pre>
+<iframe id="f" src="../pinyin-nine-key.html"></iframe>
+<script>
+/* 跨会话持久化验证：README 承诺的「关掉再打开，练习时长接着累加」是真的吗？
+   ------------------------------------------------------------------
+   ⚠️ 这个页面要**跑两次**，两次必须用**同一个 --user-data-dir**：
+
+     PROFILE="$TEMP/pnk_persist"; rm -rf "$PROFILE"
+     for i in 1 2; do
+       chrome --headless=new --disable-gpu --no-sandbox --no-proxy-server \
+              --allow-file-access-from-files --user-data-dir="$PROFILE" \
+              --virtual-time-budget=4000 --dump-dom \
+              "file:///<项目>/_check/persist.html"
+     done
+
+   第 1 次 before=null（新档案），第 2 次的 before 应当**带上上一轮存下的值**，
+   且同一页的秒数继续变大 —— 那才叫持久化。
+   ⚠️ 不能走 run_check.py：它每次都给临时 profile，永远验不出跨会话。
+
+   结论在 <pre> 的 JSON 里：storageUsable / before / after / grew。
+   TITLE = stored（存储可用）/ no-storage（localStorage 被禁用，计时器仍能走但不落盘）。 */
+var f = document.getElementById('f');
+f.addEventListener('load', function () {
+  var w = f.contentWindow, d = f.contentDocument;
+  var KEY = 'ninekey-page-seconds';
+  var before = null;
+  try { before = w.localStorage.getItem(KEY); } catch (e) { before = '(抛异常)'; }
+  var t0 = parseFloat(JSON.parse(before || '{}').basic || 0);
+
+  setTimeout(function () {                       // 切页会触发 settleTime → 落盘
+    d.querySelector('.tab[data-page="demo"]').click();
+  }, 1200);
+  setTimeout(function () {
+    var after = null;
+    try { after = w.localStorage.getItem(KEY); } catch (e) { after = null; }
+    var t1 = parseFloat(JSON.parse(after || '{}').basic || 0);
+    document.getElementById('out').textContent = JSON.stringify({
+      storageUsable: after !== null,
+      before: before,
+      after: after,
+      basicBefore: t0,
+      basicAfter: t1,
+      grew: t1 > t0,                             // 第 2 次跑必须是 true
+      timer: d.getElementById('pageTimer').textContent
+    }, null, 1);
+    document.title = after !== null ? 'stored' : 'no-storage';
+  }, 2400);
+});
+</script>
+</body></html>
