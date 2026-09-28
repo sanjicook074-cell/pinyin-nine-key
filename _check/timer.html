@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>timer</title>
+<style>
+body{margin:0}
+iframe{border:0;position:absolute;left:0;top:0;width:375px;height:900px;visibility:hidden}
+pre{position:relative;z-index:9;font:12px/1.5 monospace}
+</style>
+</head><body>
+<pre id="out">pending</pre>
+<iframe id="f" src="../pinyin-nine-key.html"></iframe>
+<script>
+/* 右上角「本页练习总时长」自检
+   断言：① 元素在、格式对
+        ② 每页各记各的（切过去显示的是那一页的旧值，不串页）
+        ③ 停在一页时数字在涨
+        ④ 切走之后原页停止累加
+        ⑤ 切回来累计不丢
+   用法：python _check/run_check.py timer.html */
+var problems = [], log = [];
+function ok(c, m) { if (!c) problems.push(m); }
+function secs(txt) {                       // "⏱ 12:05" -> 725，"⏱ 1:03:20" -> 3800
+  var m = /(\d+):(\d\d)(?::(\d\d))?$/.exec(txt || '');
+  if (!m) return null;
+  return m[3] ? (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) : (+m[1]) * 60 + (+m[2]);
+}
+function finish() {
+  document.getElementById('out').textContent =
+    JSON.stringify({ ok: problems.length === 0, problems: problems, log: log }, null, 1);
+  document.title = problems.length ? 'FAIL' : 'PASS';
+}
+
+var f = document.getElementById('f');
+f.addEventListener('load', function () {
+  var w = f.contentWindow, d = f.contentDocument;
+  var timer = d.getElementById('pageTimer');
+  var KEY = 'ninekey-page-seconds';
+  function shown() { return timer ? timer.textContent : '(无元素)'; }
+  function store() {
+    try { return JSON.parse(w.localStorage.getItem(KEY)) || {}; } catch (e) { return null; }
+  }
+  function tab(name) { d.querySelector('.tab[data-page="' + name + '"]').click(); }
+
+  ok(!!timer, '右上角找不到 #pageTimer');
+  if (!timer) return finish();
+  ok(timer.className === 'timer', '#pageTimer 的 class 不是 timer: ' + timer.className);
+  ok(/^⏱ \d+:\d\d(:?\d\d)?$/.test(shown()), '初始格式不对: ' + JSON.stringify(shown()));
+  log.push('t0 初始: ' + shown());
+
+  var a1, basicAfterLeave;
+  setTimeout(function () {                       // 在基础页待 1.2 秒
+    a1 = secs(shown());
+    ok(a1 !== null && a1 >= 1, '基础页停 1.2 秒了，显示还是 ' + shown() + '（没在走？）');
+    log.push('t1 基础页停 1.2 秒: ' + shown());
+
+    tab('demo');                                 // 切到示范页
+    ok((basicAfterLeave = (store() || {}).basic) >= 1,
+       '切页没有把基础页的时长落盘: ' + JSON.stringify(store()));
+    var b1 = secs(shown());
+    var oldDemo = Math.floor(((store() || {}).demo) || 0);
+    ok(b1 !== null && Math.abs(b1 - oldDemo) <= 1,
+       '切到示范页显示的不是示范页自己的值: 显示 ' + shown() + '，存档 demo=' + oldDemo);
+    log.push('t2 刚切到示范页: ' + shown() + '（存档 demo=' + oldDemo + '）');
+
+    setTimeout(function () {                     // 在示范页待 2.1 秒
+      /* 为什么是 2.1 秒而不是 1.2：显示按秒取整，而刷新是每秒一次、
+         相位固定。切页后只等 1.2 秒，最后一次刷新可能还落在进位之前
+         （内部计时是对的，只是屏幕还没跳到下一秒）。≥2 秒能保证
+         至少跨过一次「已经进位的刷新」。 */
+      var b2 = secs(shown());
+      ok(b2 > b1, '示范页停 2.1 秒了，数字没涨: ' + b1 + ' → ' + b2);
+      log.push('t3 示范页再停 2.1 秒: ' + shown());
+      ok(Math.abs(((store() || {}).basic || 0) - basicAfterLeave) < 0.5,
+         '切走后基础页还在涨: ' + basicAfterLeave + ' → ' + ((store() || {}).basic));
+
+      tab('basic');                              // 切回基础页
+      var a2 = secs(shown());
+      ok(a2 >= a1, '切回基础页累计丢了: 走之前 ' + a1 + ' 秒，回来只剩 ' + a2 + ' 秒');
+      log.push('t4 切回基础页: ' + shown() + '（走之前 ' + a1 + ' 秒）');
+
+      var st = store() || {};
+      ok(st.basic >= 1 && st.demo >= 1,
+         '两个页面没有各自落盘: ' + JSON.stringify(st));
+      log.push('t5 存档: ' + JSON.stringify(st));
+      finish();
+    }, 2100);
+  }, 1200);
+});
+</script>
+</body></html>

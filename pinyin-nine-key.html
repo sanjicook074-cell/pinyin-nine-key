@@ -20,6 +20,13 @@
   .brand-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
   .brand { font-size: 19px; font-weight: 800; letter-spacing: .5px; }
   .brand small { font-weight: 600; font-size: 12px; color: #8b95a5; margin-left: 6px; letter-spacing: 0; }
+  /* 右上角：本页练习总时长。tabular-nums 让数字等宽，走秒时不会左右抖 */
+  .timer {
+    flex: none;
+    font-size: 12.5px; font-weight: 800; color: #7b8698;
+    background: #f1f5fb; border-radius: 999px; padding: 5px 11px;
+    font-variant-numeric: tabular-nums; letter-spacing: .4px; white-space: nowrap;
+  }
   .tabs {
     display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px;
     background: #fff; padding: 5px; border-radius: 15px;
@@ -268,6 +275,7 @@
   <div class="top">
     <div class="brand-row">
       <div class="brand">九键拼音 <small>手机键盘学拼音</small></div>
+      <div class="timer" id="pageTimer" title="本页累计练习时长">⏱ 0:00</div>
     </div>
     <div class="tabs">
       <button class="tab active" data-page="basic">基础</button>
@@ -1176,6 +1184,68 @@ function createKeypad(onKey, opts) {
 }
 
 /* =========================================================
+   右上角：本页练习总时长
+   ---------------------------------------------------------
+   五个页面各记各的：切到某页就开始走，切走、或切到别的 App 就停。
+   口径按「停留」算，不按「有没有按键」——这是给自己看进度的，
+   简单可预期；发呆那点偏差，比"点一下才开始算"带来的困惑小得多。
+   数字存 localStorage，关掉再打开接着累加。
+   ========================================================= */
+const TIME_KEY = 'ninekey-page-seconds';
+
+let timeStore = {};
+try { timeStore = JSON.parse(localStorage.getItem(TIME_KEY)) || {}; } catch (e) { timeStore = {}; }
+
+let timePage = 'basic';       // 正在计时的那一页
+let timeFrom = Date.now();    // 这一段从什么时候开始算
+let timeOn = true;            // 页面在不在前台（切到别的 App 要停表）
+
+function saveTime() {
+  try { localStorage.setItem(TIME_KEY, JSON.stringify(timeStore)); } catch (e) {}
+}
+
+/* 结算「当前这一段」并落盘，然后把起点挪到现在 */
+function settleTime() {
+  if (timeOn) {
+    const d = (Date.now() - timeFrom) / 1000;
+    if (d > 0) timeStore[timePage] = (timeStore[timePage] || 0) + d;
+  }
+  timeFrom = Date.now();
+  saveTime();
+}
+
+/* 当前页此刻的累计秒数 = 已落盘的 + 这一段还没结算的 */
+function pageSeconds() {
+  let s = timeStore[timePage] || 0;
+  if (timeOn) s += (Date.now() - timeFrom) / 1000;
+  return s;
+}
+
+/* 秒 → 0:42 / 12:05 / 1:03:20 */
+function fmtTime(sec) {
+  sec = Math.floor(sec);
+  const h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, s = sec % 60;
+  const p = function (n) { return n < 10 ? '0' + n : '' + n; };
+  return h ? h + ':' + p(m) + ':' + p(s) : m + ':' + p(s);
+}
+
+const pageTimer = document.getElementById('pageTimer');
+function paintTime() {
+  pageTimer.textContent = '⏱ ' + fmtTime(pageSeconds());
+}
+setInterval(paintTime, 1000);
+
+/* 切到别的 App / 锁屏就停表，回到页面接着走 */
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden) { settleTime(); timeOn = false; }
+  else { timeOn = true; timeFrom = Date.now(); paintTime(); }
+});
+/* 关页面时把最后一段也存下来（pagehide 在手机上比 unload 可靠） */
+window.addEventListener('pagehide', function () { settleTime(); timeOn = false; });
+
+paintTime();
+
+/* =========================================================
    Tab 切换
    ========================================================= */
 document.querySelectorAll('.tab').forEach(function (t) {
@@ -1188,6 +1258,9 @@ document.querySelectorAll('.tab').forEach(function (t) {
     if (typeof stopDemo === 'function') stopDemo();   // 离开示范页就停掉播放
     stopVoice();                                      // 换页时把还在响的录音也掐掉
     cancelAutoNext();                                 // 也取消还没执行的「自动跳下一个」
+    settleTime();                                     // 先把上一页的练习时长结算掉
+    timePage = t.dataset.page;                        // 从这一刻起给新页计时
+    paintTime();
     /* 跟读页：切进来就自动读当前这个拼音（如果还没读过、且这题没答完）。
        播放发生在点击事件里，不会被浏览器的自动播放策略拦。 */
     if (t.dataset.page === 'read' && typeof armReadPage === 'function') armReadPage();
