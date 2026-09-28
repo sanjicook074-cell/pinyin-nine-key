@@ -11,6 +11,8 @@
    ③ buildDemoSteps 的结果上盖 kind（han = 整字步 / seg = 字母步），
       再包 playClip / voiceAndWait 把 kind 和调用时传的 rate 一起记下
    ④ speakWordOf 期间置 IN_WORD，把结尾整词朗读也认出来
+   ⑤ Date.now 钉成常数 —— 应用的排期里有 `hold - elapsed`，虚拟钟在同步代码里
+      也会往前跳，不钉死的话量出来的排期值不可复现（详见下文 PINNED_T）
    于是"整字读音到底有没有跟着滑块变"变成可以逐个比对的数字。 */
 function go() {
  try {
@@ -18,6 +20,19 @@ function go() {
   var d = fr.contentDocument, win = fr.contentWindow;
   var R = {}, bad = [], IN_WORD = false;
   var LOG;
+
+  /* 先把 iframe 里的钟钉死 —— 这一步是「量出来的数字能不能复现」的关键。
+     --------------------------------------------------------------
+     应用决定「这一步还剩多久进下一步」用的是
+         setTimeout(step, Math.max(0, hold - (Date.now() - t0)))   // 应用第 1521 行
+     而 --virtual-time-budget 的虚拟钟**在同步代码里也会自己往前跳几毫秒**。
+     于是同样的排期，本页量到的延迟会是 1400 / 1399 / 1392 三种值，
+     折算回 1× 就是 560 / 559.6 / 556.8 —— 最后一档撞上下面 ±2ms 的容差，
+     0.4× 那组就偶发 FAIL（实测 6 次里挂 1 次）。
+     **这不是应用的毛病**：`hold - elapsed` 本来就是"这一步至少留够 hold"的意思。
+     把钟钉成常数后 elapsed 恒为 0，排期值回到干净整数，容差就能继续收紧着用。 */
+  var PINNED_T = 1700000000000;
+  win.Date.now = function () { return PINNED_T; };
 
   function FakeAudio() {
     var self = this;
@@ -172,8 +187,11 @@ function go() {
     if (uniq(r.seg.played).join(',') !== String(r.rate)) bad.push(r.rate + '× 拼读实际速率不是 ' + r.rate + ': ' + uniq(r.seg.played));
     if (uniq(r.seg.args).join(',') !== String(r.rate)) bad.push(r.rate + '× 拼读调用速率不是 ' + r.rate + ': ' + uniq(r.seg.args));
     /* 排期：4500/200/900 之外的延迟折算回 1× 只能是 340(键亮) 或 560(停留)。
-       容差 2ms —— 键亮 340/1.6=212.5 取 213（折回 340.8），
-       另外虚拟钟偶尔在两步之间跳 1ms，于是出现 1399/349 这种"差一毫秒"的重复值。 */
+       钟已被钉死（见上面 PINNED_T），elapsed 恒为 0，所以折算值是精确整数，
+       容差 2ms 只用来吸收 Math.round 的取整（340/1.6=212.5→213，折回 340.8）。
+       ⚠️ 别为了"让它稳过"把容差放大到 5% 以上 —— 那会漏掉真正的 bug：
+          "hold 忘了除以 demoRate" 在 1.6× 下会让 340 的量值折成 544，
+          放大到 5% 就落进 560 的容差里，看着反而"对"。 */
     var near = function (v, t) { return Math.abs(v - t) <= 2; };
     var folded = r.delays.map(function (x) { return x * r.rate; });
     var okFold = folded.length >= 2 &&

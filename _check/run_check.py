@@ -3,7 +3,12 @@
 用法：
     python _check/run_check.py speedgap.html
     python _check/run_check.py offline.html
+    python _check/run_check.py timersuspend.html 8000      # 可选的虚拟时间预算（毫秒）
     CHROME_PATH=/path/to/chrome python _check/run_check.py twinit.html
+
+⚠️ 虚拟时间预算默认 4000ms。自检页内部 setTimeout 链加起来超过它的话，
+   页面会在断言跑完之前就被 dump 下来，输出停在 "pending" —— 这时把预算调大。
+   （timerpause / timersuspend 这类要"真等几秒"的，给 8000。）
 
 自检页把结果写进 <pre id="out"> 里的 JSON（也会显示在页面标题上），
 本脚本只负责打开、取出、打印，不做判断 —— 判断在页面里。
@@ -55,7 +60,8 @@ def run(page, budget=4000, extra=None):
 
 if __name__ == "__main__":
     page = sys.argv[1] if len(sys.argv) > 1 else "speedgap.html"
-    t, b = run(page)
+    budget = int(sys.argv[2]) if len(sys.argv) > 2 else 4000
+    t, b = run(page, budget=budget)
     print("TITLE:", t)
     try:
         o = json.loads(b)
@@ -66,6 +72,8 @@ if __name__ == "__main__":
                   "voiceRateAfterLeave"]:
             if k in o:
                 print(" ", k, "=", o[k])
+        for line in o.get("log") or []:
+            print("   ·", line)
         for k in ["slow", "norm", "fast"]:
             if k in o:
                 r = o[k]

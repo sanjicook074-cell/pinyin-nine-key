@@ -1199,6 +1199,7 @@ try { timeStore = JSON.parse(localStorage.getItem(TIME_KEY)) || {}; } catch (e) 
 let timePage = 'basic';       // 正在计时的那一页
 let timeFrom = Date.now();    // 这一段从什么时候开始算
 let timeOn = true;            // 页面在不在前台（切到别的 App 要停表）
+let lastTick = Date.now();    // 上一次心跳的时刻，用来发现「这一段其实没人跑」
 
 function saveTime() {
   try { localStorage.setItem(TIME_KEY, JSON.stringify(timeStore)); } catch (e) {}
@@ -1231,6 +1232,17 @@ function fmtTime(sec) {
 
 const pageTimer = document.getElementById('pageTimer');
 function paintTime() {
+  const now = Date.now();
+  /* 心跳间隔超过 10 秒 = 这一段根本没人跑（笔记本合盖、系统休眠、后台被节流）。
+     这种时候 visibilitychange **不会触发**（页面在浏览器眼里一直是"可见"的），
+     所以必须靠心跳自己发现，否则合上盖子过一夜，第二天打开会平白多出十几个小时。
+     只结算到「最后一次真正跑动的时刻」，把挂起的那段直接丢掉。 */
+  if (timeOn && now - lastTick > 10000) {
+    const live = (lastTick - timeFrom) / 1000;
+    if (live > 0) { timeStore[timePage] = (timeStore[timePage] || 0) + live; saveTime(); }
+    timeFrom = now;
+  }
+  lastTick = now;
   pageTimer.textContent = '⏱ ' + fmtTime(pageSeconds());
 }
 setInterval(paintTime, 1000);
@@ -1238,7 +1250,7 @@ setInterval(paintTime, 1000);
 /* 切到别的 App / 锁屏就停表，回到页面接着走 */
 document.addEventListener('visibilitychange', function () {
   if (document.hidden) { settleTime(); timeOn = false; }
-  else { timeOn = true; timeFrom = Date.now(); paintTime(); }
+  else { timeOn = true; timeFrom = Date.now(); lastTick = timeFrom; paintTime(); }
 });
 /* 关页面时把最后一段也存下来（pagehide 在手机上比 unload 可靠） */
 window.addEventListener('pagehide', function () { settleTime(); timeOn = false; });
