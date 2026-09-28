@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>layout</title>
+<style>body{margin:0}iframe{border:0;display:block}pre{font:12px/1.5 monospace}</style>
+</head><body>
+<pre id="out">pending</pre>
+<script>
+/* 顶部行布局自检（窄屏）：右上角那个计时器胶囊会不会把品牌行挤坏。
+   ---------------------------------------------------------------
+   2026-09-28 加计时器时补的.check —— 这类"多塞一个元素就挤爆"的问题
+   只在窄屏出现，而 375 宽的截图看不出来（拿宽屏截图验窄屏布局会骗人）。
+
+   断言（每个宽度都要成立）：
+     ① 品牌和计时器不重叠
+     ② 品牌行内部不溢出（scrollWidth <= clientWidth）
+     ③ 各宽度行高一致 —— 一旦某个宽度被压到换行，行高会变大
+     ④ 页面不出现横向滚动条
+     ⑤ 计时器右边缘不越过内容盒
+   用法：python _check/run_check.py layout.html */
+var WIDTHS = [320, 360, 375, 414];
+var rows = [], problems = [], i = 0;
+function ok(c, m) { if (!c) problems.push(m); }
+
+function next() {
+  if (i >= WIDTHS.length) {
+    var heights = rows.map(function (r) { return r.rowH; });
+    ok(Math.min.apply(null, heights) === Math.max.apply(null, heights),
+       '行高在各宽度不一致（被压到换行了）：' + JSON.stringify(heights));
+    document.getElementById('out').textContent = JSON.stringify({
+      ok: problems.length === 0, problems: problems, rows: rows
+    }, null, 1);
+    document.title = problems.length ? 'FAIL' : 'PASS';
+    return;
+  }
+  var w = WIDTHS[i++];
+  var f = document.createElement('iframe');
+  f.width = w; f.height = 760; f.src = '../pinyin-nine-key.html';
+  f.addEventListener('load', function () {
+    var d = f.contentDocument;
+    var row = d.querySelector('.brand-row'), brand = d.querySelector('.brand');
+    var timer = d.getElementById('pageTimer'), app = d.querySelector('.app');
+    var rb = brand.getBoundingClientRect(), rt = timer.getBoundingClientRect();
+    var ab = app.getBoundingClientRect();
+    var rec = {
+      width: w, rowH: Math.round(row.getBoundingClientRect().height),
+      brandW: Math.round(rb.width), gap: Math.round(rt.left - rb.right),
+      timerW: Math.round(rt.width), timerText: timer.textContent
+    };
+    ok(!!row && !!brand && !!timer, w + 'px：找不到顶部元素');
+    ok(!(rb.right > rt.left), w + 'px：品牌和计时器重叠（间距 ' + rec.gap + 'px）');
+    ok(row.scrollWidth <= row.clientWidth,
+       w + 'px：品牌行内溢出 ' + row.scrollWidth + ' > ' + row.clientWidth);
+    ok(!(d.documentElement.scrollWidth > d.documentElement.clientWidth), w + 'px：出现横向滚动条');
+    ok(rt.right <= ab.right + 1, w + 'px：计时器越出内容盒右边');
+    ok(/^⏱ \d+:\d\d(:?\d\d)?$/.test(timer.textContent), w + 'px：计时器文本异常：' + timer.textContent);
+    rows.push(rec);
+    f.remove(); next();
+  });
+  document.body.appendChild(f);
+}
+next();
+</script>
+</body></html>
